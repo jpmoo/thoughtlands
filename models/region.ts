@@ -7,6 +7,12 @@ export interface RegionSource {
 	concepts?: string[];
 }
 
+export interface CanvasEntry {
+	path: string;
+	addedAt: string;
+	isNew: boolean; // true if canvas was newly created, false if added to existing
+}
+
 export interface Region {
 	id: string;
 	name: string;
@@ -16,6 +22,8 @@ export interface Region {
 	createdAt: string;
 	updatedAt: string;
 	notes: string[];
+	canvasPath?: string; // Deprecated: kept for backward compatibility
+	canvases?: CanvasEntry[]; // Array of canvas entries with timestamps
 }
 
 export interface RegionsData {

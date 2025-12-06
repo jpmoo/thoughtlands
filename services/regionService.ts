@@ -67,25 +67,59 @@ export class RegionService {
 	}
 
 	filterNotesByIgnores(files: TFile[]): TFile[] {
-		return files.filter(file => {
-			// Check ignored paths
+		const filtered = files.filter(file => {
 			const filePath = file.path.toLowerCase();
-			if (this.settings.ignoredPaths.some(ignored => 
+			
+			// Check included paths (if specified)
+			if (this.settings.includedPaths.length > 0) {
+				const isIncluded = this.settings.includedPaths.some(included => 
+					filePath.startsWith(included.toLowerCase()) || 
+					filePath.includes(included.toLowerCase())
+				);
+				if (!isIncluded) {
+					return false;
+				}
+			}
+			
+			// Check ignored paths
+			const isIgnored = this.settings.ignoredPaths.some(ignored => 
 				filePath.includes(ignored.toLowerCase())
-			)) {
+			);
+			if (isIgnored) {
 				return false;
 			}
+			
 			return true;
 		});
+		// Only log summary if there's a significant difference
+		if (files.length > 10 && filtered.length < files.length * 0.5) {
+			console.log('[Thoughtlands:RegionService] Path filtering:', {
+				original: files.length,
+				filtered: filtered.length,
+				includedPaths: this.settings.includedPaths,
+				ignoredPaths: this.settings.ignoredPaths
+			});
+		}
+		return filtered;
 	}
 
 	filterTagsByIgnores(tags: string[]): string[] {
-		return tags.filter(tag => {
+		const filtered = tags.filter(tag => {
 			const tagName = tag.replace(/^#/, '').toLowerCase();
-			return !this.settings.ignoredTags.some(ignored => 
+			const isIgnored = this.settings.ignoredTags.some(ignored => 
 				ignored.toLowerCase() === tagName
 			);
+			if (isIgnored) {
+				console.log('[Thoughtlands:RegionService] Filtering out ignored tag:', tag);
+			}
+			return !isIgnored;
 		});
+		console.log('[Thoughtlands:RegionService] Tag filtering:', {
+			original: tags.length,
+			filtered: filtered.length,
+			ignoredTags: this.settings.ignoredTags
+		});
+		return filtered;
 	}
 
 	exportToJSON(): RegionsData {

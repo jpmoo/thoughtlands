@@ -5,17 +5,20 @@ export class SimplePromptModal extends Modal {
 	private onSubmit: (result: string) => void;
 	private placeholder: string;
 	private title: string;
+	private initialValue: string;
 
 	constructor(
 		app: App,
 		title: string,
 		placeholder: string,
-		onSubmit: (result: string) => void
+		onSubmit: (result: string) => void,
+		initialValue: string = ''
 	) {
 		super(app);
 		this.title = title;
 		this.placeholder = placeholder;
 		this.onSubmit = onSubmit;
+		this.initialValue = initialValue;
 	}
 
 	onOpen() {
@@ -27,11 +30,14 @@ export class SimplePromptModal extends Modal {
 		this.inputEl = contentEl.createEl('input', {
 			type: 'text',
 			placeholder: this.placeholder,
+			value: this.initialValue,
 			attr: { style: 'width: 100%; margin: 10px 0; padding: 5px;' },
 		});
 
 		this.inputEl.focus();
-		this.inputEl.select();
+		if (this.initialValue) {
+			this.inputEl.select();
+		}
 
 		const buttonContainer = contentEl.createDiv({ attr: { style: 'text-align: right; margin-top: 10px;' } });
 		
