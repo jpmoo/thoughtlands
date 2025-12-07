@@ -267,7 +267,7 @@ export class ThoughtlandsSidebarView extends ItemView {
 			text: 'From Search Results',
 			attr: { 
 				style: 'width: 100%; padding: 8px; text-align: left;',
-				title: 'Create region from current Obsidian search results.'
+				title: 'Enter search terms to find matching notes and create a region.'
 			}
 		});
 		searchButton.addEventListener('click', async () => {
@@ -310,7 +310,7 @@ export class ThoughtlandsSidebarView extends ItemView {
 					text: 'From Search Results + AI Analysis',
 					attr: { 
 						style: 'width: 100%; padding: 8px; text-align: left;',
-						title: 'Use AI to examine search results and see if there are other related notes.'
+						title: 'Enter search terms to find matching notes, then use AI to examine results and find other related notes.'
 					}
 				});
 				searchAIAnalysisButton.addEventListener('click', async () => {

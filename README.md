@@ -8,8 +8,8 @@ Thoughtlands is an Obsidian plugin that organizes and visualizes conceptual rela
 
 ### Region Creation Methods
 
-1. **Create Region from Search Results** - Collects active search result files and creates a region
-2. **Create Region from Search Results + AI Analysis** - Uses semantic similarity analysis to find additional related notes beyond the search results (requires local AI model)
+1. **Create Region from Search Results** - Enter search terms to find matching notes across your vault (searches metadata and content)
+2. **Create Region from Search Results + AI Analysis** - Enter search terms to find matching notes, then uses semantic similarity analysis to find additional related notes (requires local AI model)
 3. **Create Region from AI-Assisted Concept/Tag Analysis** - Uses AI (OpenAI or local model) to find related tags based on concepts, then gathers all notes using those tags. With local AI, can refine results using semantic similarity analysis.
 4. **Create Region from Semantic Similarity Analysis** - Directly finds notes semantically similar to descriptive text you provide (requires local AI mode)
 
@@ -88,18 +88,22 @@ Run `npm run build` to build the plugin for production.
 
 #### From Search Results
 
-1. Perform a search in Obsidian
-2. Click "From Search Results" in the Thoughtlands sidebar or run the command
-3. Enter a name and select a color
-4. The region will be created with all files from your search results
+1. Click "From Search Results" in the Thoughtlands sidebar or run the command
+2. Enter search terms when prompted (e.g., "John Adams" or "mentorship")
+3. The plugin will search all files in your vault (metadata and content) for matching terms
+4. Results are filtered by your plugin settings (included/excluded paths and tags)
+5. Enter a name and select a color
+6. The region will be created with all matching files
 
 #### From Search Results + AI Analysis
 
 1. Ensure local AI mode is enabled and embeddings are generated
-2. Perform a search in Obsidian
-3. Click "From Search Results + AI Analysis" in the Thoughtlands sidebar
+2. Click "From Search Results + AI Analysis" in the Thoughtlands sidebar
+3. Enter search terms when prompted (e.g., "John Adams" or "mentorship")
 4. The plugin will:
-   - Use embeddings from search results to compute a semantic centroid
+   - Search all files in your vault (metadata and content) for matching terms
+   - Filter results by your plugin settings (included/excluded paths and tags)
+   - Use embeddings from matching notes to compute a semantic centroid
    - Find additional notes semantically similar to the search results
    - Create a region with both search results and similar notes
 
@@ -197,8 +201,8 @@ Regions are exported to `regions.json` in the following format:
 
 ## Commands
 
-- `Create Region from Search Results` - Create a region from current search results
-- `Create Region from Search Results + AI Analysis` - Create a region with AI semantic analysis (local mode only)
+- `Create Region from Search Results` - Enter search terms to find matching notes and create a region
+- `Create Region from Search Results + AI Analysis` - Enter search terms, then use AI semantic analysis to find additional related notes (local mode only)
 - `Create Region from AI-Assisted Concept/Tag Analysis` - Create a region using AI concept search
 - `Create Region from Semantic Similarity Analysis` - Create a region using direct semantic similarity (local mode only)
 - `Export Regions to JSON` - Manually export regions to JSON
