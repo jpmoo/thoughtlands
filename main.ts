@@ -137,7 +137,7 @@ export default class ThoughtlandsPlugin extends Plugin {
 			if (!this.settings.ollamaChatModel) this.settings.ollamaChatModel = 'llama3.2';
 			if (!this.settings.includedPaths) this.settings.includedPaths = [];
 			if (!this.settings.includedTags) this.settings.includedTags = [];
-			if (!this.settings.embeddingSimilarityThreshold) this.settings.embeddingSimilarityThreshold = 0.7;
+			if (!this.settings.embeddingSimilarityThreshold) this.settings.embeddingSimilarityThreshold = 0.45;
 			if (!this.settings.maxEmbeddingResults) this.settings.maxEmbeddingResults = 20;
 		} else {
 			this.settings = Object.assign({}, DEFAULT_SETTINGS);
@@ -280,15 +280,17 @@ export default class ThoughtlandsPlugin extends Plugin {
 			},
 		});
 
-		// Create Region from Search + Tag Expansion
-		this.addCommand({
-			id: 'create-region-from-search-tags',
-			name: 'Create Region from Search + Tag Expansion',
-			callback: async () => {
-				await this.createRegionCommands.createRegionFromSearchWithTags();
-				await this.onRegionUpdate();
-			},
-		});
+		// Create Region from Search Results + AI Analysis (only if local model is active)
+		if (this.settings.aiMode === 'local') {
+			this.addCommand({
+				id: 'create-region-from-search-ai-analysis',
+				name: 'Create Region from Search Results + AI Analysis',
+				callback: async () => {
+					await this.createRegionCommands.createRegionFromSearchWithAIAnalysis();
+					await this.onRegionUpdate();
+				},
+			});
+		}
 
 		// Generate Initial Embeddings
 		this.addCommand({
@@ -298,6 +300,18 @@ export default class ThoughtlandsPlugin extends Plugin {
 				await this.generateInitialEmbeddings();
 			},
 		});
+
+		// Create Region from Semantic Similarity Analysis (only if local mode enabled)
+		if (this.settings.aiMode === 'local') {
+			this.addCommand({
+				id: 'create-region-from-semantic-similarity',
+				name: 'Create Region from Semantic Similarity Analysis',
+				callback: async () => {
+					await this.createRegionCommands.createRegionFromSemanticSimilarity();
+					await this.onRegionUpdate();
+				},
+			});
+		}
 
 		// Create Region from AI Concept Search (register if OpenAI key or local mode enabled)
 		const showAICommand = (this.settings.aiMode === 'openai' && this.settings.openAIApiKey && this.settings.openAIApiKey.trim().length > 0) ||

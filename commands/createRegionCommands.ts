@@ -1,4 +1,4 @@
-import { App, TFile, Workspace, Notice } from 'obsidian';
+import { App, TFile, Workspace, Notice, Modal } from 'obsidian';
 import { RegionService } from '../services/regionService';
 import { NoteService } from '../services/noteService';
 import { OpenAIService } from '../services/openAIService';
@@ -45,8 +45,9 @@ export class CreateRegionCommands {
 	}
 
 	async createRegionFromSearch(): Promise<void> {
-		// Get active search results
+		// Get active search results and query
 		const searchResults = this.getActiveSearchResults();
+		const searchQuery = this.getActiveSearchQuery();
 		
 		console.log('[Thoughtlands] ===== CREATE REGION FROM SEARCH =====');
 		console.log('[Thoughtlands] createRegionFromSearch: Found', searchResults.length, 'search results');
@@ -99,7 +100,7 @@ export class CreateRegionCommands {
 			'search',
 			{
 				type: 'search',
-				query: '', // Could extract from search if available
+				query: searchQuery || '',
 			},
 			notePaths
 		);
@@ -119,9 +120,16 @@ export class CreateRegionCommands {
 		new Notice(`Region "${name}" created with ${notePaths.length} notes.`);
 	}
 
-	async createRegionFromSearchWithTags(): Promise<void> {
-		// Get active search results
+	async createRegionFromSearchWithAIAnalysis(): Promise<void> {
+		// Check if local model is active
+		if (this.settings.aiMode !== 'local') {
+			new Notice('AI Analysis is only available when local AI mode is enabled.');
+			return;
+		}
+
+		// Get active search results and query
 		const searchResults = this.getActiveSearchResults();
+		const searchQuery = this.getActiveSearchQuery();
 		
 		if (searchResults.length === 0) {
 			new Notice('No search results found. Please perform a search first.');
@@ -140,63 +148,400 @@ export class CreateRegionCommands {
 			return;
 		}
 
-		// Get all tags from search results
-		const tags = this.noteService.getTagsFromNotes(filteredResults);
-		const filteredTags = this.regionService.filterTagsByIgnores(tags);
+		// Track processing info
+		const processingInfo: any = {
+			searchResultsCount: filteredResults.length,
+		};
 
-		if (filteredTags.length === 0) {
-			new Notice('No tags found in search results.');
+		// Update status
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Analyzing search results with AI...',
+				details: `Computing embeddings for ${filteredResults.length} search results`
+			});
+		}
+
+		new Notice('Analyzing search results with AI embeddings...');
+
+		// Get embeddings for search results
+		const searchResultEmbeddings: number[][] = [];
+		const filesWithEmbeddings: TFile[] = [];
+		
+		const storageService = this.embeddingService.getStorageService();
+		for (const file of filteredResults) {
+			const embedding = await storageService.getEmbedding(file);
+			if (embedding) {
+				searchResultEmbeddings.push(embedding);
+				filesWithEmbeddings.push(file);
+			}
+		}
+
+		processingInfo.searchResultsWithEmbeddings = filesWithEmbeddings.length;
+
+		if (searchResultEmbeddings.length === 0) {
+			new Notice('No embeddings found for search results. Please generate embeddings first.');
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
 			return;
 		}
 
-		// Expand to all notes with those tags
-		const expandedNotes = this.noteService.getNotesByTags(filteredTags);
-		// Filter expanded notes by all settings (paths and tags)
-		const finalNotes = this.regionService.filterNotesByIgnores(
-			expandedNotes,
+		// Calculate centroid from search result embeddings
+		const centroid = this.embeddingService.calculateCentroid(searchResultEmbeddings);
+		
+		if (centroid.length === 0) {
+			new Notice('Failed to calculate centroid from search results.');
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return;
+		}
+
+		// Update status
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Finding similar notes...',
+				details: `Searching for notes similar to ${filesWithEmbeddings.length} search results`
+			});
+		}
+
+		// Find similar notes using embedding analysis
+		// Get all markdown files as candidates (excluding search results)
+		const allMarkdownFiles = this.app.vault.getMarkdownFiles();
+		const candidateFiles = allMarkdownFiles.filter(f => 
+			!filteredResults.some(sr => sr.path === f.path)
+		);
+
+		// Filter candidates by settings
+		const filteredCandidates = this.regionService.filterNotesByIgnores(
+			candidateFiles,
 			this.app.metadataCache,
 			this.noteService
 		);
 
-		if (finalNotes.length === 0) {
-			new Notice('No notes found with the tags from search results.');
+		const similarNotes = await this.embeddingService.findSimilarNotes(
+			centroid,
+			filteredCandidates,
+			filteredResults,
+			50 // Max 50 additional similar notes
+		);
+
+		processingInfo.similarNotesFound = similarNotes.length;
+		processingInfo.similarityThreshold = this.settings.embeddingSimilarityThreshold;
+
+		// Combine search results with similar notes
+		const allNotes = [...filteredResults];
+		for (const { file } of similarNotes) {
+			if (!allNotes.some(n => n.path === file.path)) {
+				allNotes.push(file);
+			}
+		}
+
+		if (allNotes.length === 0) {
+			new Notice('No notes found after AI analysis.');
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
 			return;
 		}
 
-		// Prompt for name and color
-		const name = await this.promptForName();
-		if (!name) return;
+		// Generate region name using AI (local model)
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Generating region name...',
+				details: 'Using AI to suggest a name based on your search query'
+			});
+		}
+		new Notice('Generating region name...');
+		console.log('[Thoughtlands] Generating region name for search query:', searchQuery);
+		const nameResponse = await this.localAIService.generateRegionNameFromConcept(searchQuery || 'search results');
+		
+		let suggestedName = '';
+		if (nameResponse.success && nameResponse.name) {
+			suggestedName = nameResponse.name;
+			console.log('[Thoughtlands] AI suggested name:', suggestedName);
+		} else {
+			console.warn('[Thoughtlands] Failed to generate name, using fallback:', nameResponse.error);
+			// Fallback: create a name from search query or generic name
+			if (searchQuery && searchQuery.trim()) {
+				const words = searchQuery.split(/\s+/).slice(0, 3);
+				suggestedName = words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+			} else {
+				suggestedName = 'Search Results';
+			}
+		}
+
+		// Update status: finalizing
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Finalizing region...',
+				details: 'Please provide a name and color for the region'
+			});
+		}
+
+		// Prompt for name (pre-filled with AI suggestion) and color
+		const name = await this.promptForName(suggestedName);
+		if (!name) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return;
+		}
 
 		const color = await this.promptForColor();
-		if (!color) return;
+		if (!color) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return;
+		}
 
 		// Create region
-		const notePaths = finalNotes.map(file => file.path);
-		console.log('[Thoughtlands] Creating region from search+tags with', notePaths.length, 'notes from', filteredTags.length, 'tags');
+		const notePaths = allNotes.map(file => file.path);
 		const region = this.regionService.createRegion(
 			name,
 			color,
-			'search+tags',
+			'search',
 			{
-				type: 'tags',
-				tags: filteredTags,
+				type: 'search',
+				query: searchQuery || '',
+				processingInfo: processingInfo,
 			},
 			notePaths
 		);
-
-		console.log('[Thoughtlands] Region created:', {
-			id: region.id,
-			name: region.name,
-			notesCount: region.notes.length,
-			tagsCount: filteredTags.length
-		});
 
 		// Trigger save and UI update
 		if (this.plugin?.onRegionUpdate) {
 			await this.plugin.onRegionUpdate();
 		}
 
-		new Notice(`Region "${name}" created with ${notePaths.length} notes from ${filteredTags.length} tags.`);
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({ isCreating: false });
+		}
+
+		const additionalCount = similarNotes.length;
+		new Notice(`Region "${name}" created with ${notePaths.length} notes (${filteredResults.length} from search + ${additionalCount} from AI analysis).`);
+	}
+
+	async createRegionFromSemanticSimilarity(): Promise<void> {
+		// Check if local model is active
+		if (this.settings.aiMode !== 'local') {
+			new Notice('Semantic Similarity Analysis is only available when local AI mode is enabled.');
+			return;
+		}
+
+		// Prompt for concept text using a textarea modal
+		const conceptText = await new Promise<string | null>((resolve) => {
+			class ConceptTextModal extends Modal {
+				onOpen() {
+					const { contentEl } = this;
+					contentEl.empty();
+
+					contentEl.createEl('h2', { text: 'Enter Concept' });
+
+					// Concepts input
+					const conceptsLabel = contentEl.createEl('label', { 
+						text: 'Describe your concept (a sentence or two):',
+						attr: { style: 'display: block; margin: 10px 0 5px 0;' }
+					});
+
+					const textarea = contentEl.createEl('textarea', {
+						placeholder: 'e.g., I want to explore how mentorship and belonging create community connections',
+						attr: { 
+							style: 'width: 100%; margin: 5px 0 15px 0; padding: 5px; min-height: 60px;',
+							rows: '3'
+						},
+					});
+
+					textarea.focus();
+
+					const buttonContainer = contentEl.createDiv({ attr: { style: 'text-align: right; margin-top: 10px;' } });
+					
+					const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
+					cancelButton.addEventListener('click', () => {
+						this.close();
+						resolve(null);
+					});
+
+					const submitButton = buttonContainer.createEl('button', { text: 'OK', attr: { style: 'margin-left: 10px;' } });
+					submitButton.addEventListener('click', () => {
+						resolve(textarea.value.trim() || null);
+						this.close();
+					});
+
+					textarea.addEventListener('keydown', (e) => {
+						if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+							resolve(textarea.value.trim() || null);
+							this.close();
+						}
+						if (e.key === 'Escape') {
+							this.close();
+							resolve(null);
+						}
+					});
+				}
+
+				onClose() {
+					const { contentEl } = this;
+					contentEl.empty();
+				}
+			}
+
+			const modal = new ConceptTextModal(this.app);
+			modal.open();
+		});
+
+		if (!conceptText || conceptText.trim() === '') {
+			return;
+		}
+
+		// Update status
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Generating embedding for concept...',
+				details: `Analyzing: ${conceptText}`
+			});
+		}
+
+		new Notice('Generating embedding for concept...');
+
+		// Generate embedding for the concept
+		let conceptEmbedding: number[];
+		try {
+			conceptEmbedding = await this.embeddingService.generateEmbedding(conceptText);
+		} catch (error) {
+			console.error('[Thoughtlands] Failed to generate concept embedding:', error);
+			new Notice('Failed to generate embedding for concept. Please try again.');
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return;
+		}
+
+		// Update status
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Finding similar notes...',
+				details: 'Searching vault for semantically similar notes'
+			});
+		}
+
+		// Get all markdown files as candidates
+		const allMarkdownFiles = this.app.vault.getMarkdownFiles();
+
+		// Filter candidates by settings
+		const filteredCandidates = this.regionService.filterNotesByIgnores(
+			allMarkdownFiles,
+			this.app.metadataCache,
+			this.noteService
+		);
+
+		// Find similar notes using embedding analysis
+		const similarNotes = await this.embeddingService.findSimilarNotes(
+			conceptEmbedding,
+			filteredCandidates,
+			[], // No exclusions
+			100 // Max 100 similar notes
+		);
+
+		if (similarNotes.length === 0) {
+			new Notice('No semantically similar notes found.');
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return;
+		}
+
+		// Track processing info
+		const processingInfo: any = {
+			conceptText: conceptText,
+			similarNotesFound: similarNotes.length,
+			similarityThreshold: this.settings.embeddingSimilarityThreshold,
+		};
+
+		// Get the files from similar notes
+		const matchingFiles = similarNotes.map(({ file }) => file);
+
+		// Generate region name using AI
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Generating region name...',
+				details: 'Using AI to suggest a name based on your concept'
+			});
+		}
+		new Notice('Generating region name...');
+		console.log('[Thoughtlands] Generating region name for concept:', conceptText);
+		const nameResponse = await this.localAIService.generateRegionNameFromConcept(conceptText);
+		
+		let suggestedName = '';
+		if (nameResponse.success && nameResponse.name) {
+			suggestedName = nameResponse.name;
+			console.log('[Thoughtlands] AI suggested name:', suggestedName);
+		} else {
+			console.warn('[Thoughtlands] Failed to generate name, using fallback:', nameResponse.error);
+			// Fallback: create a name from first few words of concept
+			const words = conceptText.split(/\s+/).slice(0, 3);
+			suggestedName = words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+		}
+
+		// Update status: finalizing
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Finalizing region...',
+				details: 'Please provide a name and color for the region'
+			});
+		}
+
+		// Prompt for name (pre-filled with AI suggestion) and color
+		const name = await this.promptForName(suggestedName);
+		if (!name) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return;
+		}
+
+		const color = await this.promptForColor();
+		if (!color) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return;
+		}
+
+		// Create region
+		const notePaths = matchingFiles.map(file => file.path);
+		const region = this.regionService.createRegion(
+			name,
+			color,
+			'concept',
+			{
+				type: 'concept',
+				concepts: [conceptText],
+				aiMode: 'local',
+				processingInfo: processingInfo,
+			},
+			notePaths
+		);
+
+		// Trigger save and UI update
+		if (this.plugin?.onRegionUpdate) {
+			await this.plugin.onRegionUpdate();
+		}
+
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({ isCreating: false });
+		}
+
+		new Notice(`Region "${name}" created with ${notePaths.length} semantically similar notes.`);
 	}
 
 	async createRegionFromConcept(): Promise<void> {
@@ -621,80 +966,402 @@ export class CreateRegionCommands {
 		new Notice(`Region "${name}" created with ${notePaths.length} notes from AI-suggested tags.`);
 	}
 
+	private getActiveSearchQuery(): string | null {
+		// Try multiple ways to find the search view
+		let searchView: any = null;
+		
+		// Method 1: Get all search leaves
+		const searchLeaves = this.app.workspace.getLeavesOfType('search');
+		if (searchLeaves.length > 0) {
+			searchView = searchLeaves[0].view as any;
+		}
+		
+		// Method 2: Check active leaf if it's a search view
+		if (!searchView) {
+			const activeLeaf = this.app.workspace.activeLeaf;
+			if (activeLeaf && activeLeaf.view.getViewType() === 'search') {
+				searchView = activeLeaf.view as any;
+			}
+		}
+		
+		// Method 3: Iterate through all leaves to find a search view
+		if (!searchView) {
+			this.app.workspace.iterateAllLeaves((leaf) => {
+				if (leaf.view.getViewType() === 'search') {
+					searchView = leaf.view as any;
+					return false; // Stop iteration
+				}
+			});
+		}
+		
+		if (!searchView || !searchView.searchQuery) {
+			return null;
+		}
+		
+		const queryString = searchView.searchQuery.query;
+		if (!queryString || typeof queryString !== 'string' || queryString.trim() === '') {
+			return null;
+		}
+		
+		return queryString;
+	}
+
 	private getActiveSearchResults(): TFile[] {
+		// PRIMARY METHOD: Get search query and re-run the search programmatically
+		// This ensures we get ALL results, not just what's rendered in the DOM
+		
+		// Try multiple ways to find the search view
+		let searchView: any = null;
+		
+		// Method 1: Get all search leaves
+		const searchLeaves = this.app.workspace.getLeavesOfType('search');
+		if (searchLeaves.length > 0) {
+			searchView = searchLeaves[0].view as any;
+		}
+		
+		// Method 2: Check active leaf if it's a search view
+		if (!searchView) {
+			const activeLeaf = this.app.workspace.activeLeaf;
+			if (activeLeaf && activeLeaf.view.getViewType() === 'search') {
+				searchView = activeLeaf.view as any;
+			}
+		}
+		
+		// Method 3: Iterate through all leaves to find a search view
+		if (!searchView) {
+			this.app.workspace.iterateAllLeaves((leaf) => {
+				if (leaf.view.getViewType() === 'search') {
+					searchView = leaf.view as any;
+					return false; // Stop iteration
+				}
+			});
+		}
+		
+		if (!searchView) {
+			const errorMsg = '[Thoughtlands] ERROR: No search view found. Please open a search pane and run a search first.';
+			console.error(errorMsg);
+			// Show a user-friendly notice
+			new Notice('No search view found. Please open a search pane and run a search first.');
+			return [];
+		}
+		
+		// Check if search view has searchQuery
+		if (!searchView.searchQuery) {
+			const errorMsg = '[Thoughtlands] ERROR: Search view does not have searchQuery. The search may not have been executed yet.';
+			console.error(errorMsg);
+			new Notice('Search view found but no query. Please run a search first.');
+			return [];
+		}
+		
+		const queryString = searchView.searchQuery.query;
+		const matcher = searchView.searchQuery.matcher;
+		
+		if (!queryString || typeof queryString !== 'string' || queryString.trim() === '') {
+			console.error('[Thoughtlands] ERROR: No valid query string found in search view. Query string:', queryString);
+			new Notice('Search view found but query is empty. Please enter a search query first.');
+			return [];
+		}
+		
+		if (!matcher) {
+			const errorMsg = '[Thoughtlands] ERROR: No matcher found in search query. The search may not have been executed yet.';
+			console.error(errorMsg);
+			new Notice('Search query found but matcher is missing. Please wait for the search to complete.');
+			return [];
+		}
+		
+		// Use the matcher to test all files in the vault
+		try {
+			const allMarkdownFiles = this.app.vault.getMarkdownFiles();
+			const matchingFiles: TFile[] = [];
+			
+			for (const file of allMarkdownFiles) {
+				const fileCache = this.app.metadataCache.getFileCache(file);
+				
+				// Try multiple ways to use the matcher
+				let matches = false;
+				try {
+					if (typeof matcher === 'function') {
+						// Try with fileCache first
+						try {
+							matches = matcher(fileCache);
+						} catch (e1) {
+							// Try with file object
+							try {
+								matches = matcher(file);
+							} catch (e2) {
+								// Try with both
+								try {
+									matches = matcher(file, fileCache);
+								} catch (e3) {
+									// Skip this file
+								}
+							}
+						}
+					} else if (matcher && typeof matcher === 'object') {
+						// First, try calling the matcher as a function (it might be callable even with matchers array)
+						try {
+							// Try calling it directly as a function
+							matches = (matcher as any)(fileCache);
+						} catch (e1) {
+							try {
+								matches = (matcher as any)(file);
+							} catch (e2) {
+								// Continue to composite matcher handling
+							}
+						}
+						
+						// If we haven't found a match yet, try composite matcher approach
+						if (!matches && Array.isArray((matcher as any).matchers)) {
+							// Composite matcher - all matchers must match
+							const subMatchers = (matcher as any).matchers;
+							let allMatch = true;
+							
+							// Helper function to test a single matcher
+							const testSingleMatcher = (m: any): boolean => {
+								try {
+									// Try as function first
+									if (typeof m === 'function') {
+										try {
+											const result = m(fileCache);
+											return !!result;
+										} catch (e1) {
+											try {
+												const result = m(file);
+												return !!result;
+											} catch (e2) {
+												// Try with both
+												try {
+													const result = m(file, fileCache);
+													return !!result;
+												} catch (e3) {
+													return false;
+												}
+											}
+										}
+									}
+									
+									// Try as object with methods
+									if (m && typeof m === 'object') {
+										// Check for nested matcher
+										if (m.matcher) {
+											return testSingleMatcher(m.matcher);
+										}
+										
+										// Try test method
+										if (typeof m.test === 'function') {
+											try {
+												const result = m.test(fileCache);
+												return !!result;
+											} catch (e1) {
+												try {
+													const result = m.test(file);
+													return !!result;
+												} catch (e2) {
+													return false;
+												}
+											}
+										}
+										
+										// Try match method
+										if (typeof m.match === 'function') {
+											try {
+												const result = m.match(fileCache);
+												return !!result;
+											} catch (e1) {
+												try {
+													const result = m.match(file);
+													return !!result;
+												} catch (e2) {
+													return false;
+												}
+											}
+										}
+										
+										// Try calling as function
+										try {
+											const result = (m as any)(fileCache);
+											return !!result;
+										} catch (e1) {
+											try {
+												const result = (m as any)(file);
+												return !!result;
+											} catch (e2) {
+												return false;
+											}
+										}
+									}
+									
+									return false;
+								} catch (e) {
+									return false;
+								}
+							};
+							
+							for (const subMatcher of subMatchers) {
+								const subMatches = testSingleMatcher(subMatcher);
+								if (!subMatches) {
+									allMatch = false;
+									break;
+								}
+							}
+							matches = allMatch;
+						} else if (typeof (matcher as any).test === 'function') {
+							// Matcher might be an object with a test method
+							try {
+								matches = (matcher as any).test(fileCache);
+							} catch (e1) {
+								try {
+									matches = (matcher as any).test(file);
+								} catch (e2) {
+									// Skip
+								}
+							}
+						} else if (typeof (matcher as any).match === 'function') {
+							try {
+								matches = (matcher as any).match(fileCache);
+							} catch (e1) {
+								try {
+									matches = (matcher as any).match(file);
+								} catch (e2) {
+									// Skip
+								}
+							}
+						} else {
+							// Try calling it as a function anyway
+							try {
+								matches = (matcher as any)(fileCache);
+							} catch (e1) {
+								try {
+									matches = (matcher as any)(file);
+								} catch (e2) {
+									// Skip
+								}
+							}
+						}
+					}
+					
+					if (matches) {
+						matchingFiles.push(file);
+					}
+				} catch (e) {
+					// Some matchers might throw for certain files - that's okay, just skip
+					continue;
+				}
+			}
+			
+			// If matcher didn't work, try DOM extraction first (most reliable)
+			// then fall back to manual search if DOM extraction fails
+			if (matchingFiles.length === 0) {
+				const domResults = this.getActiveSearchResultsFromDOM();
+				if (domResults.length > 0) {
+					return domResults;
+				}
+				const manualResults = this.manualSearch(queryString);
+				if (manualResults.length > 0) {
+					return manualResults;
+				}
+				return [];
+			}
+			
+			return matchingFiles;
+		} catch (error) {
+			console.error('[Thoughtlands] Error executing search:', error);
+			// Fallback to DOM extraction if search fails
+			return this.getActiveSearchResultsFromDOM();
+		}
+	}
+	
+	private manualSearch(queryString: string): TFile[] {
+		// Parse the query string for path filters and text search
+		const pathMatch = queryString.match(/path:([^\s]+)/);
+		const pathFilter = pathMatch ? pathMatch[1].trim() : null;
+		
+		// Extract text search terms (everything except path: filters)
+		const textQuery = queryString.replace(/path:[^\s]+/g, '').trim();
+		
+		const allMarkdownFiles = this.app.vault.getMarkdownFiles();
+		const matchingFiles: TFile[] = [];
+		
+		for (const file of allMarkdownFiles) {
+			// Check path filter first
+			if (pathFilter) {
+				if (!file.path.includes(pathFilter)) {
+					continue;
+				}
+			}
+			
+			// If we only have a path filter, include the file
+			if (!textQuery) {
+				matchingFiles.push(file);
+				continue;
+			}
+			
+			// Check text search in various places
+			const fileCache = this.app.metadataCache.getFileCache(file);
+			let matches = false;
+			
+			// Check in file path/name
+			if (file.path.toLowerCase().includes(textQuery.toLowerCase()) || 
+			    file.basename.toLowerCase().includes(textQuery.toLowerCase())) {
+				matches = true;
+			}
+			
+			// Check in frontmatter
+			if (fileCache?.frontmatter) {
+				const frontmatterStr = JSON.stringify(fileCache.frontmatter).toLowerCase();
+				if (frontmatterStr.includes(textQuery.toLowerCase())) {
+					matches = true;
+				}
+			}
+			
+			// Check in tags
+			if (fileCache?.tags) {
+				for (const tag of fileCache.tags) {
+					if (tag.tag.toLowerCase().includes(textQuery.toLowerCase())) {
+						matches = true;
+						break;
+					}
+				}
+			}
+			
+			// Check in links
+			if (fileCache?.links) {
+				for (const link of fileCache.links) {
+					if (link.original?.toLowerCase().includes(textQuery.toLowerCase()) ||
+					    link.displayText?.toLowerCase().includes(textQuery.toLowerCase())) {
+						matches = true;
+						break;
+					}
+				}
+			}
+			
+			// Note: We can't easily search file content synchronously here.
+			// If no match in metadata, we'll skip this file and rely on DOM extraction
+			// which should have the actual search results from Obsidian.
+			
+			if (matches) {
+				matchingFiles.push(file);
+			}
+		}
+		
+		return matchingFiles;
+	}
+	
+	private getActiveSearchResultsFromDOM(): TFile[] {
 		const results: TFile[] = [];
 		const resultsSet = new Set<string>(); // Track paths to avoid duplicates
 		
-		console.log('[Thoughtlands] Attempting to get search results...');
-		
-		// Method 1: Get all search leaves first (don't rely on active leaf - it might not be the search view)
+		// Get all search leaves first (don't rely on active leaf - it might not be the search view)
 		const searchLeaves = this.app.workspace.getLeavesOfType('search');
-		console.log('[Thoughtlands] Found', searchLeaves.length, 'search view leaves');
 		
 		// Also check active leaf if it's a search view
 		const activeLeaf = this.app.workspace.activeLeaf;
-		if (activeLeaf) {
-			const viewType = activeLeaf.view.getViewType();
-			console.log('[Thoughtlands] Active leaf view type:', viewType);
+		if (activeLeaf && activeLeaf.view.getViewType() === 'search') {
+			const view = activeLeaf.view as any;
 			
-			if (viewType === 'search') {
-				console.log('[Thoughtlands] Active leaf is a search view - processing it first');
-				console.log('[Thoughtlands] Active leaf is a search view');
-				const view = activeLeaf.view as any;
-				
-				// Log all available properties for debugging
-				const allKeys = Object.keys(view).filter(k => !k.startsWith('_'));
-				console.log('[Thoughtlands] Search view - All properties:', allKeys);
-				
-				// Log the actual values of potentially useful properties
-				console.log('[Thoughtlands] Inspecting view properties in detail:');
-				for (const key of allKeys) {
-					const value = (view as any)[key];
-					if (value && (typeof value === 'object' || Array.isArray(value))) {
-						if (Array.isArray(value)) {
-							console.log('[Thoughtlands]   ', key, ':', `Array(${value.length})`, value.length > 0 ? value[0] : 'empty');
-						} else if (typeof value === 'object') {
-							const objKeys = Object.keys(value);
-							console.log('[Thoughtlands]   ', key, ':', `Object(${objKeys.length} keys)`, objKeys.slice(0, 10));
-							// If it looks like a map of file paths, log some sample keys
-							if (objKeys.length > 0 && objKeys.length < 50) {
-								console.log('[Thoughtlands]     Sample keys:', objKeys.slice(0, 5));
-							}
-						}
-					} else if (typeof value === 'function') {
-						console.log('[Thoughtlands]   ', key, ':', 'function');
-					} else {
-						console.log('[Thoughtlands]   ', key, ':', typeof value, value);
-					}
-				}
-				console.log('[Thoughtlands] Search view - Property details:', {
-					hasResultDomLookup: !!view.resultDomLookup,
-					resultDomLookupType: typeof view.resultDomLookup,
-					resultDomLookupKeys: view.resultDomLookup ? Object.keys(view.resultDomLookup).length : 0,
-					hasSearchResults: !!view.searchResults,
-					searchResultsType: typeof view.searchResults,
-					searchResultsLength: Array.isArray(view.searchResults) ? view.searchResults.length : 'not array',
-					hasGetResults: typeof view.getResults === 'function',
-					hasDom: !!view.dom,
-					hasContentEl: !!view.contentEl,
-					hasContainerEl: !!view.containerEl,
-					hasResult: !!view.result,
-					hasResults: !!view.results,
-					hasQuery: !!view.query,
-					hasSearchQuery: !!view.searchQuery,
-					hasAllResults: !!view.allResults,
-					hasCompleteResults: !!view.completeResults,
-					hasFileResults: !!view.fileResults,
-					hasResultMap: !!view.resultMap,
-					hasFileMap: !!view.fileMap,
-					hasResultGroups: !!view.resultGroups,
-					hasResultList: !!view.resultList
-				});
-				
-				// CRITICAL: Try to get all results from the search query's matcher
-				// The matcher might have access to all files, not just rendered ones
-				if (view.searchQuery && view.searchQuery.matcher && typeof view.searchQuery.matcher === 'object') {
-					console.log('[Thoughtlands] Found searchQuery.matcher, keys:', Object.keys(view.searchQuery.matcher));
+			// Try to get all results from the search query's matcher
+			// The matcher might have access to all files, not just rendered ones
+			if (view.searchQuery && view.searchQuery.matcher && typeof view.searchQuery.matcher === 'object') {
 					
 					// Try to get all files from the matcher
 					const matcher = view.searchQuery.matcher as any;
@@ -746,7 +1413,6 @@ export class CreateRegionCommands {
 								console.log('[Thoughtlands]   ✓ Added from matcher.files:', file.path);
 							}
 						}
-						console.log('[Thoughtlands] After matcher.files: Total =', results.length);
 					}
 					
 					// Try other matcher properties
@@ -756,7 +1422,6 @@ export class CreateRegionCommands {
 							if (result && result.file instanceof TFile && !resultsSet.has(result.file.path)) {
 								results.push(result.file);
 								resultsSet.add(result.file.path);
-								console.log('[Thoughtlands]   ✓ Added from matcher.results:', result.file.path);
 							}
 						}
 					}
@@ -771,7 +1436,6 @@ export class CreateRegionCommands {
 									if (result && result.file instanceof TFile && !resultsSet.has(result.file.path)) {
 										results.push(result.file);
 										resultsSet.add(result.file.path);
-										console.log('[Thoughtlands]   ✓ Added from matcher() call:', result.file.path);
 									}
 								}
 							}
@@ -780,37 +1444,8 @@ export class CreateRegionCommands {
 						}
 					}
 					
-					// Log all matcher properties for debugging
-					const matcherKeys = Object.keys(matcher);
-					console.log('[Thoughtlands] matcher has', matcherKeys.length, 'properties:', matcherKeys);
-					for (const key of matcherKeys) {
-						const value = matcher[key];
-						if (Array.isArray(value)) {
-							console.log('[Thoughtlands]   matcher.' + key + ':', `Array(${value.length})`);
-							if (value.length > 0 && value.length <= 20) {
-								console.log('[Thoughtlands]     Sample items:', value.slice(0, 5));
-							}
-						} else if (typeof value === 'function') {
-							console.log('[Thoughtlands]   matcher.' + key + ':', 'function');
-						} else if (value && typeof value === 'object') {
-							console.log('[Thoughtlands]   matcher.' + key + ':', `Object(${Object.keys(value).length} keys)`);
-						}
-					}
 				}
 				
-				// Try to access the search query to see if we can get all results
-				if (view.query) {
-					console.log('[Thoughtlands] Search query found:', view.query);
-					// Try to re-run the search to get all results
-					try {
-						if (typeof view.update === 'function') {
-							console.log('[Thoughtlands] Attempting to update search view to get all results...');
-							// This might trigger a refresh that loads all results
-						}
-					} catch (e) {
-						console.log('[Thoughtlands] Error updating search view:', e);
-					}
-				}
 				
 				// Check if there's a way to get all results from the search view's internal state
 				// Some Obsidian versions store all results separately from what's rendered
@@ -821,11 +1456,9 @@ export class CreateRegionCommands {
 							if (!resultsSet.has(result.file.path)) {
 								results.push(result.file);
 								resultsSet.add(result.file.path);
-								console.log('[Thoughtlands]   ✓ Added from cachedResults:', result.file.path);
 							}
 						}
 					}
-					console.log('[Thoughtlands] After cachedResults: Total files =', results.length);
 				}
 				
 				// Check for a results cache or store
@@ -842,7 +1475,6 @@ export class CreateRegionCommands {
 							}
 						}
 					}
-					console.log('[Thoughtlands] After resultsCache: Total files =', results.length);
 				}
 				
 				// Try to access the search plugin's results directly
@@ -859,7 +1491,6 @@ export class CreateRegionCommands {
 				// Try resultDomLookup (most common in recent Obsidian versions)
 				if (view.resultDomLookup && typeof view.resultDomLookup === 'object') {
 					const filePaths = Object.keys(view.resultDomLookup);
-					console.log('[Thoughtlands] Method: resultDomLookup - Found', filePaths.length, 'file paths');
 					console.log('[Thoughtlands]   File paths in resultDomLookup:', filePaths);
 					for (const filePath of filePaths) {
 						if (resultsSet.has(filePath)) {
@@ -875,12 +1506,10 @@ export class CreateRegionCommands {
 							console.log('[Thoughtlands]   ✗ Could not resolve file path:', filePath);
 						}
 					}
-					console.log('[Thoughtlands] After resultDomLookup: Total files =', results.length);
 				}
 				
 				// Try allResults if it exists (might contain complete result set)
 				if (view.allResults && Array.isArray(view.allResults)) {
-					console.log('[Thoughtlands] Method: allResults - Found', view.allResults.length, 'results');
 					for (const result of view.allResults) {
 						if (result && result.file instanceof TFile) {
 							if (!resultsSet.has(result.file.path)) {
@@ -890,12 +1519,10 @@ export class CreateRegionCommands {
 							}
 						}
 					}
-					console.log('[Thoughtlands] After allResults: Total files =', results.length);
 				}
 				
 				// Try completeResults if it exists
 				if (view.completeResults && Array.isArray(view.completeResults)) {
-					console.log('[Thoughtlands] Method: completeResults - Found', view.completeResults.length, 'results');
 					for (const result of view.completeResults) {
 						if (result && result.file instanceof TFile) {
 							if (!resultsSet.has(result.file.path)) {
@@ -905,28 +1532,23 @@ export class CreateRegionCommands {
 							}
 						}
 					}
-					console.log('[Thoughtlands] After completeResults: Total files =', results.length);
 				}
 				
 				// Try fileResults if it exists
 				if (view.fileResults && Array.isArray(view.fileResults)) {
-					console.log('[Thoughtlands] Method: fileResults - Found', view.fileResults.length, 'results');
 					for (const result of view.fileResults) {
 						if (result && result.file instanceof TFile) {
 							if (!resultsSet.has(result.file.path)) {
 								results.push(result.file);
 								resultsSet.add(result.file.path);
-								console.log('[Thoughtlands]   ✓ Added from fileResults:', result.file.path);
 							}
 						}
 					}
-					console.log('[Thoughtlands] After fileResults: Total files =', results.length);
 				}
 				
 				// Try resultMap if it exists
 				if (view.resultMap && typeof view.resultMap === 'object') {
 					const resultMapKeys = Object.keys(view.resultMap);
-					console.log('[Thoughtlands] Method: resultMap - Found', resultMapKeys.length, 'entries');
 					for (const key of resultMapKeys) {
 						const result = view.resultMap[key];
 						if (result && result.file instanceof TFile) {
@@ -937,22 +1559,18 @@ export class CreateRegionCommands {
 							}
 						}
 					}
-					console.log('[Thoughtlands] After resultMap: Total files =', results.length);
 				}
 				
 				// Try resultList if it exists
 				if (view.resultList && Array.isArray(view.resultList)) {
-					console.log('[Thoughtlands] Method: resultList - Found', view.resultList.length, 'results');
 					for (const result of view.resultList) {
 						if (result && result.file instanceof TFile) {
 							if (!resultsSet.has(result.file.path)) {
 								results.push(result.file);
 								resultsSet.add(result.file.path);
-								console.log('[Thoughtlands]   ✓ Added from resultList:', result.file.path);
 							}
 						}
 					}
-					console.log('[Thoughtlands] After resultList: Total files =', results.length);
 				}
 				
 				// Try searchResults array
@@ -1051,28 +1669,18 @@ export class CreateRegionCommands {
 					}
 				}
 			}
-		}
 		
 		// Method 2: Process all search view leaves (always run to ensure we get all results)
-		console.log('[Thoughtlands] Processing all search view leaves (found', searchLeaves.length, 'leaves,', results.length, 'results so far)');
 		
 		// Process all search leaves for internal properties
 		for (let leafIndex = 0; leafIndex < searchLeaves.length; leafIndex++) {
 			const leaf = searchLeaves[leafIndex];
 			const view = leaf.view as any;
 			if (!view) {
-				console.log('[Thoughtlands] Leaf', leafIndex + 1, '- View is null');
 				continue;
 			}
 
 			const viewKeys = Object.keys(view).filter(k => !k.startsWith('_'));
-			console.log('[Thoughtlands] Leaf', leafIndex + 1, '/', searchLeaves.length, '- Inspecting search view:', {
-				hasResultDomLookup: !!view.resultDomLookup,
-				hasSearchResults: !!view.searchResults,
-				hasGetResults: typeof view.getResults === 'function',
-				hasDom: !!view.dom,
-				viewKeys: viewKeys.slice(0, 20) // First 20 keys for debugging
-			});
 			console.log('[Thoughtlands] Leaf', leafIndex + 1, '- ALL view properties:', viewKeys);
 			
 			// Log detailed inspection of potentially useful properties
@@ -1529,9 +2137,67 @@ export class CreateRegionCommands {
 						// Check matchedTokens - might contain file references
 						if (subMatcher.matchedTokens && Array.isArray(subMatcher.matchedTokens)) {
 							console.log('[Thoughtlands]     Sub-matcher', i + 1, '- matchedTokens has', subMatcher.matchedTokens.length, 'tokens');
-							// Log sample tokens to see their structure
-							if (subMatcher.matchedTokens.length > 0 && subMatcher.matchedTokens.length <= 20) {
-								console.log('[Thoughtlands]       Sample matchedTokens:', subMatcher.matchedTokens.slice(0, 5));
+							// Inspect matchedTokens structure deeply
+							for (let tokenIndex = 0; tokenIndex < subMatcher.matchedTokens.length && tokenIndex < 10; tokenIndex++) {
+								const token = subMatcher.matchedTokens[tokenIndex];
+								if (token && typeof token === 'object') {
+									const tokenKeys = Object.keys(token);
+									console.log('[Thoughtlands]       Token', tokenIndex + 1, '- keys:', tokenKeys);
+									
+									// Check if token has file property
+									if (token.file instanceof TFile && !resultsSet.has(token.file.path)) {
+										results.push(token.file);
+										resultsSet.add(token.file.path);
+										console.log('[Thoughtlands]         ✓ Added from matchedToken', tokenIndex + 1, '.file:', token.file.path);
+									}
+									
+									// Check if token has path property
+									if (token.path && typeof token.path === 'string') {
+										const tFile = this.app.vault.getAbstractFileByPath(token.path);
+										if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+											results.push(tFile);
+											resultsSet.add(tFile.path);
+											console.log('[Thoughtlands]         ✓ Added from matchedToken', tokenIndex + 1, '.path:', tFile.path);
+										}
+									}
+									
+									// Check if token has filePath property
+									if (token.filePath && typeof token.filePath === 'string') {
+										const tFile = this.app.vault.getAbstractFileByPath(token.filePath);
+										if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+											results.push(tFile);
+											resultsSet.add(tFile.path);
+											console.log('[Thoughtlands]         ✓ Added from matchedToken', tokenIndex + 1, '.filePath:', tFile.path);
+										}
+									}
+								}
+							}
+						}
+						
+						// Also check nested matcher's matchedTokens
+						if (subMatcher.matcher && subMatcher.matcher.matchedTokens && Array.isArray(subMatcher.matcher.matchedTokens)) {
+							console.log('[Thoughtlands]     Sub-matcher', i + 1, '- nested matcher matchedTokens has', subMatcher.matcher.matchedTokens.length, 'tokens');
+							for (let tokenIndex = 0; tokenIndex < subMatcher.matcher.matchedTokens.length && tokenIndex < 10; tokenIndex++) {
+								const token = subMatcher.matcher.matchedTokens[tokenIndex];
+								if (token && typeof token === 'object') {
+									const tokenKeys = Object.keys(token);
+									console.log('[Thoughtlands]       Nested token', tokenIndex + 1, '- keys:', tokenKeys);
+									
+									if (token.file instanceof TFile && !resultsSet.has(token.file.path)) {
+										results.push(token.file);
+										resultsSet.add(token.file.path);
+										console.log('[Thoughtlands]         ✓ Added from nested matchedToken', tokenIndex + 1, '.file:', token.file.path);
+									}
+									
+									if (token.path && typeof token.path === 'string') {
+										const tFile = this.app.vault.getAbstractFileByPath(token.path);
+										if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+											results.push(tFile);
+											resultsSet.add(tFile.path);
+											console.log('[Thoughtlands]         ✓ Added from nested matchedToken', tokenIndex + 1, '.path:', tFile.path);
+										}
+									}
+								}
 							}
 						}
 					}
@@ -1555,6 +2221,174 @@ export class CreateRegionCommands {
 					}
 				}
 				console.log('[Thoughtlands] Leaf', leafIndex + 1, '- After matcher check: Total =', results.length);
+			}
+			
+			// CRITICAL: Check for any methods on the view that might return all results
+			// Look for methods with names like getAllResults, getAllFiles, getCompleteResults, etc.
+			const viewMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(view))
+				.concat(Object.keys(view))
+				.filter(key => typeof (view as any)[key] === 'function' && !key.startsWith('_'));
+			
+			console.log('[Thoughtlands] Leaf', leafIndex + 1, '- Checking', viewMethods.length, 'methods on search view');
+			for (const methodName of viewMethods) {
+				if (methodName.toLowerCase().includes('result') || 
+				    methodName.toLowerCase().includes('file') ||
+				    methodName.toLowerCase().includes('search') ||
+				    methodName.toLowerCase().includes('get') ||
+				    methodName.toLowerCase().includes('all')) {
+					try {
+						const method = (view as any)[methodName];
+						if (typeof method === 'function' && methodName !== 'getResults') { // We already checked getResults
+							console.log('[Thoughtlands]   Trying method:', methodName);
+							const methodResult = method.call(view);
+							if (Array.isArray(methodResult)) {
+								console.log('[Thoughtlands]     Method', methodName, 'returned array with', methodResult.length, 'items');
+								for (const item of methodResult) {
+									if (item && item.file instanceof TFile && !resultsSet.has(item.file.path)) {
+										results.push(item.file);
+										resultsSet.add(item.file.path);
+										console.log('[Thoughtlands]       ✓ Added from', methodName + '():', item.file.path);
+									} else if (item instanceof TFile && !resultsSet.has(item.path)) {
+										results.push(item);
+										resultsSet.add(item.path);
+										console.log('[Thoughtlands]       ✓ Added from', methodName + '() (direct file):', item.path);
+									}
+								}
+							} else if (methodResult && typeof methodResult === 'object') {
+								console.log('[Thoughtlands]     Method', methodName, 'returned object with', Object.keys(methodResult).length, 'keys');
+							}
+						}
+					} catch (e) {
+						// Method might require parameters or throw - that's okay
+					}
+				}
+			}
+			
+			// CRITICAL: Check the queue property - it might contain unrendered search results
+			// The queue object has keys: ['_loaded', '_events', '_children', 'queue', 'app', 'dom']
+			if (view.queue && typeof view.queue === 'object') {
+				console.log('[Thoughtlands] Leaf', leafIndex + 1, '- Found queue property, inspecting...');
+				const queue = view.queue as any;
+				const queueKeys = Object.keys(queue);
+				console.log('[Thoughtlands]   Queue keys:', queueKeys);
+				
+				// Check queue.queue (might be an array of queued items)
+				if (queue.queue !== undefined) {
+					console.log('[Thoughtlands]   Queue.queue exists, type:', typeof queue.queue, Array.isArray(queue.queue) ? `Array(${queue.queue.length})` : 'not array');
+					if (Array.isArray(queue.queue)) {
+						console.log('[Thoughtlands]   Queue.queue has', queue.queue.length, 'items');
+						for (let i = 0; i < queue.queue.length; i++) {
+							const item = queue.queue[i];
+							if (item && typeof item === 'object') {
+								// Check if item has file property
+								if (item.file instanceof TFile && !resultsSet.has(item.file.path)) {
+									results.push(item.file);
+									resultsSet.add(item.file.path);
+									console.log('[Thoughtlands]     ✓ Added from queue.queue[' + i + '].file:', item.file.path);
+								} else if (item.path && typeof item.path === 'string') {
+									const tFile = this.app.vault.getAbstractFileByPath(item.path);
+									if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+										results.push(tFile);
+										resultsSet.add(tFile.path);
+										console.log('[Thoughtlands]     ✓ Added from queue.queue[' + i + '].path:', tFile.path);
+									}
+								}
+							}
+						}
+					} else if (queue.queue && typeof queue.queue === 'object') {
+						// It might be an object/map instead of an array
+						const queueQueueKeys = Object.keys(queue.queue);
+						console.log('[Thoughtlands]   Queue.queue is an object with', queueQueueKeys.length, 'keys');
+						console.log('[Thoughtlands]   Queue.queue sample keys:', queueQueueKeys.slice(0, 10));
+						
+						// First, check if the keys themselves are file paths
+						for (const key of queueQueueKeys) {
+							if (!resultsSet.has(key) && typeof key === 'string' && key.includes('.md')) {
+								const tFile = this.app.vault.getAbstractFileByPath(key);
+								if (tFile instanceof TFile) {
+									results.push(tFile);
+									resultsSet.add(key);
+									console.log('[Thoughtlands]     ✓ Added from queue.queue key (file path):', tFile.path);
+								}
+							}
+						}
+						
+						// Then check the values
+						for (const key of queueQueueKeys) {
+							const item = queue.queue[key];
+							if (item && typeof item === 'object') {
+								if (item.file instanceof TFile && !resultsSet.has(item.file.path)) {
+									results.push(item.file);
+									resultsSet.add(item.file.path);
+									console.log('[Thoughtlands]     ✓ Added from queue.queue[' + key + '].file:', item.file.path);
+								} else if (item.path && typeof item.path === 'string') {
+									const tFile = this.app.vault.getAbstractFileByPath(item.path);
+									if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+										results.push(tFile);
+										resultsSet.add(tFile.path);
+										console.log('[Thoughtlands]     ✓ Added from queue.queue[' + key + '].path:', tFile.path);
+									}
+								}
+							} else if (typeof item === 'string' && item.includes('.md')) {
+								// The value itself might be a file path
+								const tFile = this.app.vault.getAbstractFileByPath(item);
+								if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+									results.push(tFile);
+									resultsSet.add(tFile.path);
+									console.log('[Thoughtlands]     ✓ Added from queue.queue[' + key + '] (string path):', tFile.path);
+								}
+							}
+						}
+					}
+				} else {
+					console.log('[Thoughtlands]   Queue.queue does not exist');
+				}
+				
+				// Check queue._children (might contain child items)
+				if (queue._children && Array.isArray(queue._children)) {
+					console.log('[Thoughtlands]   Queue._children has', queue._children.length, 'items');
+					for (let i = 0; i < queue._children.length; i++) {
+						const child = queue._children[i];
+						if (child && typeof child === 'object') {
+							if (child.file instanceof TFile && !resultsSet.has(child.file.path)) {
+								results.push(child.file);
+								resultsSet.add(child.file.path);
+								console.log('[Thoughtlands]     ✓ Added from queue._children[' + i + '].file:', child.file.path);
+							} else if (child.path && typeof child.path === 'string') {
+								const tFile = this.app.vault.getAbstractFileByPath(child.path);
+								if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+									results.push(tFile);
+									resultsSet.add(tFile.path);
+									console.log('[Thoughtlands]     ✓ Added from queue._children[' + i + '].path:', tFile.path);
+								}
+							}
+						}
+					}
+				}
+				
+				// Check queue.dom (might contain DOM-related results)
+				if (queue.dom && typeof queue.dom === 'object') {
+					const queueDomKeys = Object.keys(queue.dom);
+					console.log('[Thoughtlands]   Queue.dom has', queueDomKeys.length, 'keys:', queueDomKeys);
+					
+					// Check if queue.dom has resultDomLookup or similar
+					if (queue.dom.resultDomLookup && typeof queue.dom.resultDomLookup === 'object') {
+						const queueLookupKeys = Object.keys(queue.dom.resultDomLookup);
+						console.log('[Thoughtlands]     Queue.dom.resultDomLookup has', queueLookupKeys.length, 'entries');
+						for (const key of queueLookupKeys) {
+							if (!resultsSet.has(key)) {
+								const tFile = this.app.vault.getAbstractFileByPath(key);
+								if (tFile instanceof TFile) {
+									results.push(tFile);
+									resultsSet.add(key);
+									console.log('[Thoughtlands]       ✓ Added from queue.dom.resultDomLookup:', tFile.path);
+								}
+							}
+						}
+					}
+				}
+				
+				console.log('[Thoughtlands] Leaf', leafIndex + 1, '- After queue check: Total =', results.length);
 			}
 
 			// CRITICAL: view.dom is an object, not an Element! It contains resultDomLookup
@@ -2087,6 +2921,146 @@ export class CreateRegionCommands {
 				}
 			}
 			console.log('[Thoughtlands] After comprehensive DOM extraction: Found', results.length, 'total search results');
+		}
+		
+		// FALLBACK: If we don't have enough results, try to access all properties of the view's dom object
+		// to find where the complete results might be stored
+		if (results.length < 11 && searchLeaves.length > 0) {
+			const firstSearchView = searchLeaves[0].view as any;
+			if (firstSearchView && firstSearchView.dom) {
+				console.log('[Thoughtlands] FALLBACK: Deep inspection of view.dom properties...');
+				const domKeys = Object.keys(firstSearchView.dom);
+				console.log('[Thoughtlands]   view.dom has', domKeys.length, 'keys:', domKeys);
+				
+				// Special handling for vChildren - it's virtualization-related and might contain all results
+				if (firstSearchView.dom.vChildren && typeof firstSearchView.dom.vChildren === 'object') {
+					console.log('[Thoughtlands]   SPECIAL: Inspecting dom.vChildren (virtualization container)');
+					const vChildren = firstSearchView.dom.vChildren as any;
+					
+					// Check if it's a Map
+					if (vChildren instanceof Map) {
+						console.log('[Thoughtlands]     vChildren is a Map with', vChildren.size, 'entries');
+						for (const [key, value] of vChildren.entries()) {
+							if (typeof key === 'string' && key.includes('.md') && !resultsSet.has(key)) {
+								const tFile = this.app.vault.getAbstractFileByPath(key);
+								if (tFile instanceof TFile) {
+									results.push(tFile);
+									resultsSet.add(key);
+									console.log('[Thoughtlands]       ✓ Added from vChildren Map key:', tFile.path);
+								}
+							}
+							if (value && typeof value === 'object') {
+								if (value.file instanceof TFile && !resultsSet.has(value.file.path)) {
+									results.push(value.file);
+									resultsSet.add(value.file.path);
+									console.log('[Thoughtlands]       ✓ Added from vChildren Map value.file:', value.file.path);
+								} else if (value.path && typeof value.path === 'string') {
+									const tFile = this.app.vault.getAbstractFileByPath(value.path);
+									if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+										results.push(tFile);
+										resultsSet.add(tFile.path);
+										console.log('[Thoughtlands]       ✓ Added from vChildren Map value.path:', tFile.path);
+									}
+								}
+							}
+						}
+					} else {
+						// It's a regular object
+						const vChildrenKeys = Object.keys(vChildren);
+						console.log('[Thoughtlands]     vChildren is an object with', vChildrenKeys.length, 'keys');
+						for (const vKey of vChildrenKeys) {
+							// Check if key is a file path
+							if (!resultsSet.has(vKey) && typeof vKey === 'string' && vKey.includes('.md')) {
+								const tFile = this.app.vault.getAbstractFileByPath(vKey);
+								if (tFile instanceof TFile) {
+									results.push(tFile);
+									resultsSet.add(vKey);
+									console.log('[Thoughtlands]       ✓ Added from vChildren key:', tFile.path);
+								}
+							}
+							// Check the value
+							const vValue = vChildren[vKey];
+							if (vValue && typeof vValue === 'object') {
+								if (vValue.file instanceof TFile && !resultsSet.has(vValue.file.path)) {
+									results.push(vValue.file);
+									resultsSet.add(vValue.file.path);
+									console.log('[Thoughtlands]       ✓ Added from vChildren[' + vKey + '].file:', vValue.file.path);
+								} else if (vValue.path && typeof vValue.path === 'string') {
+									const tFile = this.app.vault.getAbstractFileByPath(vValue.path);
+									if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+										results.push(tFile);
+										resultsSet.add(tFile.path);
+										console.log('[Thoughtlands]       ✓ Added from vChildren[' + vKey + '].path:', tFile.path);
+									}
+								}
+							}
+						}
+					}
+				}
+				
+				// Check for any array-like properties that might contain results
+				for (const key of domKeys) {
+					// Skip vChildren as we already handled it
+					if (key === 'vChildren') continue;
+					
+					const value = firstSearchView.dom[key];
+					if (Array.isArray(value) && value.length > 0) {
+						console.log('[Thoughtlands]   Found array property dom.' + key + ' with', value.length, 'items');
+						// Check if items in array have file properties
+						for (let i = 0; i < Math.min(value.length, 20); i++) {
+							const item = value[i];
+							if (item && typeof item === 'object') {
+								if (item.file instanceof TFile && !resultsSet.has(item.file.path)) {
+									results.push(item.file);
+									resultsSet.add(item.file.path);
+									console.log('[Thoughtlands]     ✓ Added from dom.' + key + '[' + i + '].file:', item.file.path);
+								} else if (item.path && typeof item.path === 'string') {
+									const tFile = this.app.vault.getAbstractFileByPath(item.path);
+									if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+										results.push(tFile);
+										resultsSet.add(tFile.path);
+										console.log('[Thoughtlands]     ✓ Added from dom.' + key + '[' + i + '].path:', tFile.path);
+									}
+								}
+							}
+						}
+					} else if (value && typeof value === 'object' && !Array.isArray(value)) {
+						// Check if it's a Map or object with file paths as keys
+						const valueKeys = Object.keys(value);
+						if (valueKeys.length > 0 && valueKeys.length < 200) {
+							console.log('[Thoughtlands]   Found object property dom.' + key + ' with', valueKeys.length, 'keys');
+							for (const vKey of valueKeys.slice(0, 50)) {
+								// Check if key is a file path
+								if (!resultsSet.has(vKey) && typeof vKey === 'string' && vKey.includes('.md')) {
+									const tFile = this.app.vault.getAbstractFileByPath(vKey);
+									if (tFile instanceof TFile) {
+										results.push(tFile);
+										resultsSet.add(vKey);
+										console.log('[Thoughtlands]     ✓ Added from dom.' + key + ' key:', tFile.path);
+									}
+								}
+								// Check the value
+								const vValue = value[vKey];
+								if (vValue && typeof vValue === 'object') {
+									if (vValue.file instanceof TFile && !resultsSet.has(vValue.file.path)) {
+										results.push(vValue.file);
+										resultsSet.add(vValue.file.path);
+										console.log('[Thoughtlands]     ✓ Added from dom.' + key + '[' + vKey + '].file:', vValue.file.path);
+									} else if (vValue.path && typeof vValue.path === 'string') {
+										const tFile = this.app.vault.getAbstractFileByPath(vValue.path);
+										if (tFile instanceof TFile && !resultsSet.has(tFile.path)) {
+											results.push(tFile);
+											resultsSet.add(tFile.path);
+											console.log('[Thoughtlands]     ✓ Added from dom.' + key + '[' + vKey + '].path:', tFile.path);
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				console.log('[Thoughtlands] After deep dom inspection: Total =', results.length);
+			}
 		}
 		
 		// Remove duplicates and log final count

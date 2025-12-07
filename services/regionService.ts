@@ -97,7 +97,7 @@ export class RegionService {
 				if (!isIncluded) {
 					// Only log for batches, not individual file checks
 					if (isBatch) {
-						console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (not in included paths: ${this.settings.includedPaths.join(', ')})`);
+					console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (not in included paths: ${this.settings.includedPaths.join(', ')})`);
 					}
 					return false;
 				}
@@ -111,7 +111,7 @@ export class RegionService {
 			if (isIgnored) {
 				// Only log for batches, not individual file checks
 				if (isBatch) {
-					console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (in ignored paths)`);
+				console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (in ignored paths)`);
 				}
 				return false;
 			}
@@ -167,14 +167,14 @@ export class RegionService {
 		// Log summary only for batches
 		if (isBatch) {
 			console.log('[Thoughtlands:RegionService] Filtering result:', {
-				original: files.length,
-				filtered: filtered.length,
-				excluded: files.length - filtered.length,
-				includedPaths: this.settings.includedPaths,
+			original: files.length,
+			filtered: filtered.length,
+			excluded: files.length - filtered.length,
+			includedPaths: this.settings.includedPaths,
 				ignoredPaths: this.settings.ignoredPaths,
 				includedTags: this.settings.includedTags,
 				ignoredTags: this.settings.ignoredTags
-			});
+		});
 		}
 		
 		return filtered;

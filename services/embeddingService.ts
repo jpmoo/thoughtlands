@@ -223,13 +223,13 @@ export class EmbeddingService {
 					
 					try {
 						response = await fetch(`${this.settings.ollamaUrl}/api/embed`, {
-							method: 'POST',
-							headers: {
-								'Content-Type': 'application/json',
-							},
-							body: JSON.stringify(requestBody),
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify(requestBody),
 							signal: controller.signal,
-						});
+				});
 						clearTimeout(timeoutId);
 					} catch (fetchError) {
 						clearTimeout(timeoutId);
@@ -239,26 +239,26 @@ export class EmbeddingService {
 						throw fetchError;
 					}
 
-					// If 404/405, try /api/embeddings (plural) as fallback
-					if (!response.ok && (response.status === 404 || response.status === 405)) {
-						console.log('[Thoughtlands:EmbeddingService] /api/embed failed, trying /api/embeddings');
+				// If 404/405, try /api/embeddings (plural) as fallback
+				if (!response.ok && (response.status === 404 || response.status === 405)) {
+					console.log('[Thoughtlands:EmbeddingService] /api/embed failed, trying /api/embeddings');
 						try {
 							// Add timeout for fallback request too
 							const fallbackController = new AbortController();
 							const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), 30000);
 							
 							try {
-								response = await fetch(`${this.settings.ollamaUrl}/api/embeddings`, {
-									method: 'POST',
-									headers: {
-										'Content-Type': 'application/json',
-									},
-									body: JSON.stringify({
-										model: this.settings.ollamaEmbeddingModel,
-										input: text, // Ollama uses "input" not "prompt" for embeddings
-									}),
+					response = await fetch(`${this.settings.ollamaUrl}/api/embeddings`, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+						},
+						body: JSON.stringify({
+							model: this.settings.ollamaEmbeddingModel,
+							input: text, // Ollama uses "input" not "prompt" for embeddings
+						}),
 									signal: fallbackController.signal,
-								});
+					});
 								clearTimeout(fallbackTimeoutId);
 							} catch (fallbackFetchError) {
 								clearTimeout(fallbackTimeoutId);
@@ -474,6 +474,21 @@ export class EmbeddingService {
 					let response: Response;
 					try {
 						response = await fetch(`${this.settings.ollamaUrl}/api/embed`, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+						},
+						body: JSON.stringify({
+							model: this.settings.ollamaEmbeddingModel,
+							input: text, // Ollama uses "input" not "prompt" for embeddings
+						}),
+					});
+
+					// If 404/405, try /api/embeddings (plural) as fallback
+					if (!response.ok && (response.status === 404 || response.status === 405)) {
+						console.log(`[Thoughtlands:EmbeddingService] /api/embed failed for ${file.path}, trying /api/embeddings`);
+							try {
+						response = await fetch(`${this.settings.ollamaUrl}/api/embeddings`, {
 							method: 'POST',
 							headers: {
 								'Content-Type': 'application/json',
@@ -483,21 +498,6 @@ export class EmbeddingService {
 								input: text, // Ollama uses "input" not "prompt" for embeddings
 							}),
 						});
-
-						// If 404/405, try /api/embeddings (plural) as fallback
-						if (!response.ok && (response.status === 404 || response.status === 405)) {
-							console.log(`[Thoughtlands:EmbeddingService] /api/embed failed for ${file.path}, trying /api/embeddings`);
-							try {
-								response = await fetch(`${this.settings.ollamaUrl}/api/embeddings`, {
-									method: 'POST',
-									headers: {
-										'Content-Type': 'application/json',
-									},
-									body: JSON.stringify({
-										model: this.settings.ollamaEmbeddingModel,
-										input: text, // Ollama uses "input" not "prompt" for embeddings
-									}),
-								});
 							} catch (fallbackError) {
 								console.error(`[Thoughtlands:EmbeddingService] Fallback fetch failed for ${file.path}:`, fallbackError);
 								return null;

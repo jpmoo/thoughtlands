@@ -107,7 +107,7 @@ export class ThoughtlandsSidebarView extends ItemView {
 				style: 'padding: 10px; border-bottom: 1px solid var(--background-modifier-border); display: flex; justify-content: space-between; align-items: center;' 
 			} 
 		});
-		header.createEl('h2', { text: 'Thoughtlands Regions', attr: { style: 'margin: 0;' } });
+		header.createEl('h2', { text: 'Thoughtlands', attr: { style: 'margin: 0;' } });
 		
 		// Settings button with gear icon
 		const settingsButton = header.createEl('button', {
@@ -224,19 +224,21 @@ export class ThoughtlandsSidebarView extends ItemView {
 			this.render();
 		});
 
-		// Button 2: Create Region from Search + Tag Expansion
-		const searchTagsButton = buttonsContainer.createEl('button', { 
-			text: 'From Search + Tags',
-			attr: { 
-				style: 'width: 100%; padding: 8px; text-align: left;',
-				title: 'Create region from current Obsidian search results, plus any notes that share the same tags as any note in those results.'
-			}
-		});
-		searchTagsButton.addEventListener('click', async () => {
-			await this.createRegionCommands.createRegionFromSearchWithTags();
-			await this.onRegionUpdate();
-			this.render();
-		});
+		// Button 2: Create Region from Search Results + AI Analysis (only if local model is active)
+		if (this.settings.aiMode === 'local') {
+			const searchAIAnalysisButton = buttonsContainer.createEl('button', { 
+				text: 'From Search Results + AI Analysis',
+				attr: { 
+					style: 'width: 100%; padding: 8px; text-align: left;',
+					title: 'Use AI to examine search results and see if there are other related notes.'
+				}
+			});
+			searchAIAnalysisButton.addEventListener('click', async () => {
+				await this.createRegionCommands.createRegionFromSearchWithAIAnalysis();
+				await this.onRegionUpdate();
+				this.render();
+			});
+		}
 
 		// Button 3: Create Region from AI Concept Search (show if OpenAI key or local mode enabled)
 		const showAIButton = (this.settings.aiMode === 'openai' && this.settings.openAIApiKey && this.settings.openAIApiKey.trim().length > 0) ||
@@ -269,19 +271,66 @@ export class ThoughtlandsSidebarView extends ItemView {
 		
 		// Only show AI button if embeddings are complete AND not processing
 		if (showAIButton && embeddingsComplete && !isProcessing) {
+			let tooltipText = `Use ${this.settings.aiMode === 'local' ? 'local model' : 'AI'} to gather notes that have tags relevant to certain concepts that you provide.`;
+			if (this.settings.aiMode === 'local') {
+				tooltipText += ' Refine the selection with semantic similarity analysis.';
+			}
+			
 			const conceptButton = buttonsContainer.createEl('button', { 
 				text: 'From AI-Assisted Concept/Tag Analysis',
 				attr: { 
 					style: 'width: 100%; padding: 8px; text-align: left;',
-					title: `Use ${this.settings.aiMode === 'local' ? 'local model' : 'AI'} to gather notes that have tags relevant to certain concepts that you provide.`
+					title: tooltipText
 				}
 			});
 			
-			conceptButton.addEventListener('click', async () => {
-				await this.createRegionCommands.createRegionFromConcept();
-				await this.onRegionUpdate();
-				this.render();
-			});
+				conceptButton.addEventListener('click', async () => {
+					await this.createRegionCommands.createRegionFromConcept();
+					await this.onRegionUpdate();
+					this.render();
+				});
+		}
+
+		// Button 4: Create Region from Semantic Similarity Analysis (only if local mode enabled)
+		if (this.settings.aiMode === 'local') {
+			// Check if embeddings are complete and not processing
+			const embeddingService = (this.plugin as any).embeddingService;
+			let embeddingsComplete = true;
+			let isProcessing = false;
+			if (embeddingService) {
+				// Check if processing is in progress
+				isProcessing = embeddingService.isEmbeddingProcessInProgress();
+				
+				// Ensure data is loaded, then check
+				embeddingService.getStorageService().loadEmbeddings().then(() => {
+					const complete = embeddingService.isEmbeddingProcessComplete();
+					const processing = embeddingService.isEmbeddingProcessInProgress();
+					embeddingsComplete = complete;
+					// Re-render if status changed
+					if (!embeddingsComplete || processing) {
+						this.render();
+					}
+				}).catch(() => {
+					embeddingsComplete = false;
+				});
+			}
+			
+			// Only show semantic similarity button if embeddings are complete AND not processing
+			if (embeddingsComplete && !isProcessing) {
+				const semanticButton = buttonsContainer.createEl('button', { 
+					text: 'From Semantic Similarity Analysis',
+					attr: { 
+						style: 'width: 100%; padding: 8px; text-align: left;',
+						title: 'Examine the semantic similarilty between descriptive text you enter and the notes in your vault. Returns up to 100 notes. To be more selective, increase the embedding similarity threshold in settings.'
+					}
+				});
+				
+				semanticButton.addEventListener('click', async () => {
+					await this.createRegionCommands.createRegionFromSemanticSimilarity();
+					await this.onRegionUpdate();
+					this.render();
+				});
+			}
 		}
 
 		// Check if region creation is in progress

@@ -125,17 +125,17 @@ export class LocalAIService {
 					if (response.status === 404) {
 						console.log('[Thoughtlands:LocalAI] /api/chat returned 404, trying /api/generate endpoint');
 						try {
-							response = await fetch(`${this.settings.ollamaUrl}/api/generate`, {
-								method: 'POST',
-								headers: {
-									'Content-Type': 'application/json',
-								},
-								body: JSON.stringify({
-									model: this.settings.ollamaChatModel,
-									prompt: prompt,
-									stream: false,
-								}),
-							});
+						response = await fetch(`${this.settings.ollamaUrl}/api/generate`, {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json',
+							},
+							body: JSON.stringify({
+								model: this.settings.ollamaChatModel,
+								prompt: prompt,
+								stream: false,
+							}),
+						});
 						} catch (fallbackError) {
 							console.error('[Thoughtlands:LocalAI] Fallback fetch failed:', fallbackError);
 							return { success: false, error: `Failed to connect to Ollama: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}` };
@@ -225,7 +225,7 @@ export class LocalAIService {
 				}
 				tags = validatedTags;
 			} else {
-				tags = tags.slice(0, maxTags);
+			tags = tags.slice(0, maxTags);
 			}
 			
 			console.log('[Thoughtlands:LocalAI] Final validated tags:', tags);
@@ -293,17 +293,17 @@ export class LocalAIService {
 				if (!response.ok && response.status === 404) {
 					// Fallback to /api/generate
 					try {
-						response = await fetch(`${this.settings.ollamaUrl}/api/generate`, {
-							method: 'POST',
-							headers: {
-								'Content-Type': 'application/json',
-							},
-							body: JSON.stringify({
-								model: this.settings.ollamaChatModel,
-								prompt: prompt,
-								stream: false,
-							}),
-						});
+					response = await fetch(`${this.settings.ollamaUrl}/api/generate`, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+						},
+						body: JSON.stringify({
+							model: this.settings.ollamaChatModel,
+							prompt: prompt,
+							stream: false,
+						}),
+					});
 					} catch (fallbackError) {
 						console.error('[Thoughtlands:LocalAI] Fallback fetch failed:', fallbackError);
 						return { success: false, error: `Failed to connect to Ollama: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}` };
@@ -390,7 +390,7 @@ export class LocalAIService {
 				}
 				filteredTags = validatedTags;
 			} else {
-				filteredTags = filteredTags.slice(0, maxTags);
+			filteredTags = filteredTags.slice(0, maxTags);
 			}
 			
 			console.log('[Thoughtlands:LocalAI] Final validated filtered tags:', filteredTags.length, 'from', tags.length, 'original tags');
@@ -659,17 +659,137 @@ Generate a concise, descriptive name (2-4 words) for a region that represents no
 				if (!response.ok && response.status === 404) {
 					// Fallback to /api/generate
 					try {
-						response = await fetch(`${this.settings.ollamaUrl}/api/generate`, {
-							method: 'POST',
-							headers: {
-								'Content-Type': 'application/json',
+					response = await fetch(`${this.settings.ollamaUrl}/api/generate`, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+						},
+						body: JSON.stringify({
+							model: this.settings.ollamaChatModel,
+							prompt: prompt,
+							stream: false,
+						}),
+					});
+					} catch (fallbackError) {
+						console.error('[Thoughtlands:LocalAI] Fallback fetch failed:', fallbackError);
+						return { success: false, error: `Failed to connect to Ollama: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}` };
+					}
+				}
+			} catch (fetchError) {
+				return { success: false, error: `Failed to connect to Ollama: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}` };
+			}
+
+			if (!response.ok) {
+				let errorMessage = `HTTP ${response.status}`;
+				try {
+					const error = await response.json();
+					errorMessage = error.error?.message || error.message || errorMessage;
+				} catch (parseError) {
+					// If we can't parse the error, try to read as text
+					try {
+						const errorText = await response.text();
+						if (errorText) {
+							errorMessage = errorText;
+						}
+					} catch (textError) {
+						// If we can't read the error, use the status
+						errorMessage = `HTTP ${response.status} - Unable to read error response`;
+					}
+				}
+				
+				// Provide more helpful error messages for common issues
+				if (response.status === 404) {
+					errorMessage = `Ollama endpoint not found (404). The model "${this.settings.ollamaChatModel}" may not be installed. Try running: ollama pull ${this.settings.ollamaChatModel}`;
+				}
+				
+				console.error('[Thoughtlands:LocalAI] Name generation failed:', errorMessage);
+				return {
+					success: false,
+					error: errorMessage,
+				};
+			}
+
+			const responseData = await response.json();
+			// Handle both /api/chat and /api/generate response formats
+			const name = responseData.message?.content?.trim() || responseData.response?.trim();
+			
+			if (!name) {
+				return {
+					success: false,
+					error: 'No name generated',
+				};
+			}
+
+			// Clean up the name (remove quotes, extra whitespace, etc.)
+			const cleanName = name.replace(/^["']|["']$/g, '').trim();
+
+			console.log('[Thoughtlands:LocalAI] Generated region name:', cleanName);
+			return {
+				success: true,
+				name: cleanName,
+			};
+		} catch (error) {
+			console.error('[Thoughtlands:LocalAI] Exception during name generation:', error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : 'Unknown error',
+			};
+		}
+	}
+
+	async generateRegionNameFromConcept(conceptText: string): Promise<{ success: boolean; name?: string; error?: string }> {
+		console.log('[Thoughtlands:LocalAI] generateRegionNameFromConcept called with concept:', conceptText);
+		
+		// Check if Ollama is available first
+		const ollamaCheck = await this.checkOllamaAvailable();
+		if (!ollamaCheck.available) {
+			console.error('[Thoughtlands:LocalAI] Ollama not available:', ollamaCheck.error);
+			return {
+				success: false,
+				error: ollamaCheck.error || 'Ollama is not available. Please check if Ollama is running.'
+			};
+		}
+		
+		try {
+			const prompt = `Given this concept description: ${conceptText}
+
+Generate a concise, descriptive name (2-4 words) for a region that represents notes about this concept. Return only the name, nothing else.`;
+
+			// Try /api/chat first, fallback to /api/generate
+			let response: Response;
+			
+			try {
+				response = await fetch(`${this.settings.ollamaUrl}/api/chat`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify({
+						model: this.settings.ollamaChatModel,
+						messages: [
+							{
+								role: 'user',
+								content: prompt,
 							},
-							body: JSON.stringify({
-								model: this.settings.ollamaChatModel,
-								prompt: prompt,
-								stream: false,
-							}),
-						});
+						],
+						stream: false,
+					}),
+				});
+
+				if (!response.ok && response.status === 404) {
+					// Fallback to /api/generate
+					try {
+					response = await fetch(`${this.settings.ollamaUrl}/api/generate`, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+						},
+						body: JSON.stringify({
+							model: this.settings.ollamaChatModel,
+							prompt: prompt,
+							stream: false,
+						}),
+					});
 					} catch (fallbackError) {
 						console.error('[Thoughtlands:LocalAI] Fallback fetch failed:', fallbackError);
 						return { success: false, error: `Failed to connect to Ollama: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}` };

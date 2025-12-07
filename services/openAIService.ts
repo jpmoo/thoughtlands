@@ -168,7 +168,7 @@ export class OpenAIService {
 				}
 				tags = validatedTags;
 			} else {
-				tags = tags.slice(0, maxTags);
+			tags = tags.slice(0, maxTags);
 			}
 			
 			console.log('[Thoughtlands:OpenAI] Final validated tags:', tags);
@@ -260,7 +260,7 @@ export class OpenAIService {
 		if (availableTags && availableTags.length > 0) {
 			prompt += `\n\nFINAL REMINDER: Return ONLY tags from the VALID TAGS list above. Any tag not in that list will be automatically rejected. Return only a JSON array of tag names (without the # prefix).`;
 		} else {
-			prompt += `\nReturn only a JSON array of tag names (without the # prefix).`;
+		prompt += `\nReturn only a JSON array of tag names (without the # prefix).`;
 		}
 
 		return prompt;
@@ -472,11 +472,11 @@ export class OpenAIService {
 				}
 				finalTags = validatedTags;
 			} else {
-				finalTags = finalTags.slice(0, maxTags);
+			finalTags = finalTags.slice(0, maxTags);
 			}
 			
 			console.log('[Thoughtlands:OpenAI] Final validated filtered tags:', finalTags.length, 'from', tags.length, 'original tags');
-
+			
 			return { success: true, tags: finalTags };
 		} catch (error) {
 			console.error('[Thoughtlands:OpenAI] Exception during filter API call:', error);

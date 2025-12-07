@@ -12,7 +12,7 @@ export interface ThoughtlandsSettings {
 	includedTags: string[]; // Tags to include (empty = all)
 	defaultColors: string[];
 	aiModel: string; // OpenAI model (for backward compatibility)
-	embeddingSimilarityThreshold: number; // 0-1, how similar notes need to be (default: 0.7)
+	embeddingSimilarityThreshold: number; // 0-1, how similar notes need to be (default: 0.45)
 	maxEmbeddingResults: number; // Max notes to find via embeddings (default: 20)
 }
 
@@ -28,7 +28,7 @@ export const DEFAULT_SETTINGS: ThoughtlandsSettings = {
 	includedTags: [],
 	defaultColors: ['#E67E22', '#3498DB', '#9B59B6', '#1ABC9C', '#E74C3C', '#F39C12', '#34495E', '#16A085'],
 	aiModel: 'gpt-3.5-turbo',
-	embeddingSimilarityThreshold: 0.7,
+	embeddingSimilarityThreshold: 0.45,
 	maxEmbeddingResults: 20,
 };
 

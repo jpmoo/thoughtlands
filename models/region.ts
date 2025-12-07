@@ -1,12 +1,16 @@
-export type RegionMode = 'search' | 'search+tags' | 'concept';
+export type RegionMode = 'search' | 'concept';
 
 export function getModeDisplayName(mode: RegionMode, region?: Region): string {
 	switch (mode) {
 		case 'search':
 			return 'Search';
-		case 'search+tags':
-			return 'Search + Tags';
 		case 'concept':
+			// Check if this is semantic similarity (has conceptText but no tag analysis)
+			if (region?.source?.processingInfo?.conceptText && 
+				!region.source.processingInfo.initialTags && 
+				!region.source.processingInfo.refinedTags) {
+				return 'Semantic Similarity';
+			}
 			// Show which AI was used if available
 			if (region?.source?.aiMode) {
 				const aiProvider = region.source.aiMode === 'local' ? 'Local' : 'ChatGPT';
@@ -29,6 +33,12 @@ export interface ConceptProcessingInfo {
 	embeddingAddedCount?: number;
 	embeddingFiltered?: boolean;
 	similarityThreshold?: number; // Similarity threshold used for filtering
+	// Search + AI Analysis specific fields
+	searchResultsCount?: number; // Number of search results found
+	searchResultsWithEmbeddings?: number; // Number of search results that had embeddings
+	similarNotesFound?: number; // Number of similar notes found via embedding analysis
+	// Semantic Similarity Analysis specific fields
+	conceptText?: string; // The concept text used for semantic similarity analysis
 }
 
 export interface RegionSource {
