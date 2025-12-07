@@ -12,6 +12,12 @@ import { ThoughtlandsSettings, DEFAULT_SETTINGS } from './settings/thoughtlandsS
 import { ThoughtlandsSidebarView, THOUGHTLANDS_VIEW_TYPE } from './views/thoughtlandsSidebarView';
 import { Region } from './models/region';
 
+export interface RegionCreationStatus {
+	isCreating: boolean;
+	step?: string;
+	details?: string;
+}
+
 export default class ThoughtlandsPlugin extends Plugin {
 	settings: ThoughtlandsSettings;
 	canvasService: CanvasService;
@@ -23,6 +29,11 @@ export default class ThoughtlandsPlugin extends Plugin {
 	tagAffinityCache: TagAffinityCache;
 	jsonExportService: JSONExportService;
 	createRegionCommands: CreateRegionCommands;
+	private embeddingQueue: TFile[] = [];
+	private isProcessingEmbeddingQueue: boolean = false;
+	private isInitialized: boolean = false;
+	private regionCreationStatus: RegionCreationStatus = { isCreating: false };
+	private regionCreationStatusCallbacks: Set<() => void> = new Set();
 
 	async onload() {
 		await this.loadSettings();
@@ -46,7 +57,8 @@ export default class ThoughtlandsPlugin extends Plugin {
 			this.openAIService,
 			this.localAIService,
 			this.embeddingService,
-			this.settings
+			this.settings,
+			this
 		);
 
 		// Load regions from plugin data
@@ -56,6 +68,12 @@ export default class ThoughtlandsPlugin extends Plugin {
 		if (this.settings.aiMode === 'local') {
 			await this.embeddingService.getStorageService().loadEmbeddings();
 		}
+
+		// Mark as initialized after a short delay to avoid processing files from initial load
+		setTimeout(() => {
+			this.isInitialized = true;
+			console.log('[Thoughtlands] Plugin initialized, file monitoring enabled');
+		}, 2000); // 2 second delay to let Obsidian finish loading files
 
 		// Register sidebar view
 		this.registerView(
@@ -83,18 +101,19 @@ export default class ThoughtlandsPlugin extends Plugin {
 		});
 
 		// Monitor file changes to update embeddings for new/edited files
+		// Use a queue to process files one at a time to avoid overwhelming Ollama
 		this.registerEvent(
-			this.app.vault.on('modify', async (file) => {
+			this.app.vault.on('modify', (file) => {
 				if (file instanceof TFile && file.extension === 'md' && this.settings.aiMode === 'local') {
-					await this.updateEmbeddingForFile(file, false); // false = modified file
+					this.queueEmbeddingUpdate(file, false); // false = modified file
 				}
 			})
 		);
 
 		this.registerEvent(
-			this.app.vault.on('create', async (file) => {
+			this.app.vault.on('create', (file) => {
 				if (file instanceof TFile && file.extension === 'md' && this.settings.aiMode === 'local') {
-					await this.updateEmbeddingForFile(file, true); // true = new file
+					this.queueEmbeddingUpdate(file, true); // true = new file
 				}
 			})
 		);
@@ -204,6 +223,8 @@ export default class ThoughtlandsPlugin extends Plugin {
 			data.openAIApiKey = this.settings.openAIApiKey;
 			data.ignoredTags = this.settings.ignoredTags;
 			data.ignoredPaths = this.settings.ignoredPaths;
+			data.includedPaths = this.settings.includedPaths;
+			data.includedTags = this.settings.includedTags;
 			data.defaultColors = this.settings.defaultColors;
 			data.aiModel = this.settings.aiModel;
 		}
@@ -227,6 +248,25 @@ export default class ThoughtlandsPlugin extends Plugin {
 				leaf.view.render();
 			}
 		});
+	}
+
+	getRegionCreationStatus(): RegionCreationStatus {
+		return this.regionCreationStatus;
+	}
+
+	updateRegionCreationStatus(status: RegionCreationStatus): void {
+		this.regionCreationStatus = status;
+		// Notify all subscribers
+		this.regionCreationStatusCallbacks.forEach(callback => callback());
+		// Also trigger sidebar re-render
+		this.onRegionUpdate();
+	}
+
+	subscribeToRegionCreationStatus(callback: () => void): () => void {
+		this.regionCreationStatusCallbacks.add(callback);
+		return () => {
+			this.regionCreationStatusCallbacks.delete(callback);
+		};
 	}
 
 	private addCommands() {
@@ -316,11 +356,18 @@ export default class ThoughtlandsPlugin extends Plugin {
 
 	async generateInitialEmbeddings(): Promise<void> {
 		const allFiles = this.app.vault.getMarkdownFiles();
+		console.log(`[Thoughtlands] Starting embedding process. Total files in vault: ${allFiles.length}`);
+		console.log(`[Thoughtlands] Current filter settings:`, {
+			includedPaths: this.settings.includedPaths,
+			ignoredPaths: this.settings.ignoredPaths,
+			includedTags: this.settings.includedTags,
+			ignoredTags: this.settings.ignoredTags
+		});
 		
-		// Filter by ignored paths and tags
+		// Filter by ignored paths and tags (this also checks included paths)
 		const filteredFiles = this.regionService.filterNotesByIgnores(allFiles);
 		
-		// Also filter by included paths/tags if set
+		// Also filter by included tags if set
 		const finalFiles = filteredFiles.filter(file => {
 			// Check included tags if set
 			if (this.settings.includedTags.length > 0) {
@@ -349,9 +396,13 @@ export default class ThoughtlandsPlugin extends Plugin {
 				this.updateEmbeddingProgress(progress);
 			});
 			new Notice(`Embedding process complete!`);
+			// Trigger sidebar re-render to show/hide UI elements
+			this.onRegionUpdate();
 		} catch (error) {
 			console.error('[Thoughtlands] Error generating initial embeddings:', error);
 			new Notice(`Error: ${error instanceof Error ? error.message : 'Failed to generate embeddings'}`);
+			// Trigger sidebar re-render even on error
+			this.onRegionUpdate();
 		}
 	}
 
@@ -374,6 +425,66 @@ export default class ThoughtlandsPlugin extends Plugin {
 		}
 	}
 
+	private queueEmbeddingUpdate(file: TFile, isNew: boolean): void {
+		// First check if file should be included/excluded (before any logging)
+		const filtered = this.regionService.filterNotesByIgnores([file]);
+		if (filtered.length === 0) {
+			// File is outside included paths or in ignored paths - silently skip
+			return;
+		}
+
+		// Don't process files until plugin is fully initialized
+		// This prevents processing files that Obsidian fires 'create' events for on startup
+		if (!this.isInitialized) {
+			// Only log if file is in scope (already filtered above)
+			return; // Silent skip during initialization
+		}
+
+		// Only process if embeddings are complete (initial build done)
+		if (!this.embeddingService.isEmbeddingProcessComplete()) {
+			return; // Silent skip if embeddings not complete
+		}
+
+		// Add to queue if not already queued
+		if (!this.embeddingQueue.some((f: TFile) => f.path === file.path)) {
+			this.embeddingQueue.push(file);
+		}
+		
+		// Start processing queue if not already processing
+		if (!this.isProcessingEmbeddingQueue) {
+			this.processEmbeddingQueue();
+		}
+	}
+
+	private async processEmbeddingQueue(): Promise<void> {
+		if (this.isProcessingEmbeddingQueue) {
+			return; // Already processing
+		}
+		
+		this.isProcessingEmbeddingQueue = true;
+		
+		while (this.embeddingQueue.length > 0) {
+			const file = this.embeddingQueue.shift();
+			if (!file) break;
+			
+			// Determine if it's new (check if it was just created)
+			const isNew = true; // We'll track this better if needed, but for now assume new
+			
+			try {
+				await this.updateEmbeddingForFile(file, isNew);
+			} catch (error) {
+				console.error(`[Thoughtlands] Error processing ${file.path} from queue:`, error);
+			}
+			
+			// Small delay between files to avoid overwhelming Ollama
+			if (this.embeddingQueue.length > 0) {
+				await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between files
+			}
+		}
+		
+		this.isProcessingEmbeddingQueue = false;
+	}
+
 	async updateEmbeddingForFile(file: TFile, isNew: boolean = false): Promise<void> {
 		// Only update if embeddings are complete (initial build done)
 		if (!this.embeddingService.isEmbeddingProcessComplete()) {
@@ -384,8 +495,14 @@ export default class ThoughtlandsPlugin extends Plugin {
 		const storageService = this.embeddingService.getStorageService();
 		const hasCurrentEmbedding = await storageService.hasEmbedding(file);
 		
+		// If file already has a current embedding, skip it (no need to regenerate)
+		if (hasCurrentEmbedding) {
+			console.log(`[Thoughtlands] Skipping ${file.path} - already has current embedding`);
+			return;
+		}
+		
 		// Log what we're doing
-		const fileType = isNew ? 'new' : (hasCurrentEmbedding ? 'modified' : 'missing embedding');
+		const fileType = isNew ? 'new' : 'modified';
 		console.log(`[Thoughtlands] Processing ${fileType} file: ${file.path}`);
 
 		// Check if file should be included/excluded

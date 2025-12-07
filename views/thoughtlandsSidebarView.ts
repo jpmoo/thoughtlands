@@ -1,5 +1,5 @@
 import { ItemView, WorkspaceLeaf, Notice, Plugin } from 'obsidian';
-import { Region } from '../models/region';
+import { Region, getModeDisplayName } from '../models/region';
 import { RegionService } from '../services/regionService';
 import { CreateRegionCommands } from '../commands/createRegionCommands';
 import { RegionInfoModal } from '../ui/regionInfoModal';
@@ -16,6 +16,8 @@ export class ThoughtlandsSidebarView extends ItemView {
 	private plugin: Plugin;
 	private settings: ThoughtlandsSettings;
 	private onRegionUpdate: () => void;
+	private progressUnsubscribe?: () => void;
+	private regionStatusUnsubscribe?: () => void;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -53,18 +55,52 @@ export class ThoughtlandsSidebarView extends ItemView {
 			const embeddingService = (this.plugin as any).embeddingService;
 			if (embeddingService) {
 				await embeddingService.getStorageService().loadEmbeddings();
+				// Subscribe to progress updates to re-render when process starts/stops
+				if (this.progressUnsubscribe) {
+					this.progressUnsubscribe();
+				}
+				this.progressUnsubscribe = embeddingService.onProgress(() => {
+					this.render();
+				});
 			}
 		}
+		
+		// Subscribe to region creation status updates
+		if (this.regionStatusUnsubscribe) {
+			this.regionStatusUnsubscribe();
+		}
+		const plugin = this.plugin as any;
+		if (plugin.subscribeToRegionCreationStatus) {
+			this.regionStatusUnsubscribe = plugin.subscribeToRegionCreationStatus(() => {
+				this.render();
+			});
+		}
+		
 		this.render();
 	}
 
 	async onClose() {
-		// Cleanup if needed
+		// Cleanup progress subscription
+		if (this.progressUnsubscribe) {
+			this.progressUnsubscribe();
+			this.progressUnsubscribe = undefined;
+		}
+		// Cleanup region status subscription
+		if (this.regionStatusUnsubscribe) {
+			this.regionStatusUnsubscribe();
+			this.regionStatusUnsubscribe = undefined;
+		}
 	}
 
 	render() {
 		const { containerEl } = this;
 		containerEl.empty();
+		
+		// Make the container scrollable
+		containerEl.style.overflowY = 'auto';
+		containerEl.style.height = '100%';
+		containerEl.style.display = 'flex';
+		containerEl.style.flexDirection = 'column';
 
 		const header = containerEl.createDiv({ 
 			attr: { 
@@ -96,9 +132,13 @@ export class ThoughtlandsSidebarView extends ItemView {
 		// Embedding status and start button (only show if local mode)
 		if (this.settings.aiMode === 'local') {
 			const embeddingService = (this.plugin as any).embeddingService;
-			// Check embeddings completion - load data first, then check synchronously
+			// Check embeddings completion and processing status
 			let embeddingsComplete = false;
+			let isProcessing = false;
 			if (embeddingService) {
+				// Check if processing is in progress
+				isProcessing = embeddingService.isEmbeddingProcessInProgress();
+				
 				// Try to load embeddings data synchronously if not already loaded
 				const storageService = embeddingService.getStorageService();
 				const currentData = storageService.getEmbeddingsData();
@@ -106,8 +146,9 @@ export class ThoughtlandsSidebarView extends ItemView {
 					// Data not loaded, try to load it (but this is async, so we'll check after)
 					storageService.loadEmbeddings().then(() => {
 						const isComplete = embeddingService.isEmbeddingProcessComplete();
-						if (isComplete) {
-							this.render(); // Re-render to hide the section
+						const stillProcessing = embeddingService.isEmbeddingProcessInProgress();
+						if (isComplete || stillProcessing) {
+							this.render(); // Re-render to hide/show the section
 						}
 					}).catch((err: any) => {
 						console.error('[Thoughtlands:Sidebar] Error loading embeddings:', err);
@@ -118,8 +159,8 @@ export class ThoughtlandsSidebarView extends ItemView {
 				}
 			}
 			
-			// Show the section if embeddings are not complete
-			if (!embeddingsComplete) {
+			// Show the section if embeddings are not complete AND not currently processing
+			if (!embeddingsComplete && !isProcessing) {
 				const embeddingSection = containerEl.createDiv({ 
 					attr: { style: 'padding: 10px; border-bottom: 1px solid var(--background-modifier-border); background-color: var(--background-modifier-form-field-highlighted);' } 
 				});
@@ -201,19 +242,23 @@ export class ThoughtlandsSidebarView extends ItemView {
 		const showAIButton = (this.settings.aiMode === 'openai' && this.settings.openAIApiKey && this.settings.openAIApiKey.trim().length > 0) ||
 		                     (this.settings.aiMode === 'local');
 		
-		// Check if embeddings are complete for local mode
+		// Check if embeddings are complete and not processing for local mode
 		// Access embeddingService through the plugin instance
 		let embeddingsComplete = true;
+		let isProcessing = false;
 		if (this.settings.aiMode === 'local') {
 			const embeddingService = (this.plugin as any).embeddingService;
 			if (embeddingService) {
+				// Check if processing is in progress
+				isProcessing = embeddingService.isEmbeddingProcessInProgress();
+				
 				// Ensure data is loaded, then check
 				embeddingService.getStorageService().loadEmbeddings().then(() => {
-					return embeddingService.isEmbeddingProcessComplete();
-				}).then((complete: boolean) => {
+					const complete = embeddingService.isEmbeddingProcessComplete();
+					const processing = embeddingService.isEmbeddingProcessInProgress();
 					embeddingsComplete = complete;
 					// Re-render if status changed
-					if (!embeddingsComplete) {
+					if (!embeddingsComplete || processing) {
 						this.render();
 					}
 				}).catch(() => {
@@ -222,31 +267,78 @@ export class ThoughtlandsSidebarView extends ItemView {
 			}
 		}
 		
-		if (showAIButton) {
+		// Only show AI button if embeddings are complete AND not processing
+		if (showAIButton && embeddingsComplete && !isProcessing) {
 			const conceptButton = buttonsContainer.createEl('button', { 
 				text: 'From AI-Assisted Concept/Tag Analysis',
 				attr: { 
-					style: `width: 100%; padding: 8px; text-align: left; ${!embeddingsComplete ? 'opacity: 0.5; cursor: not-allowed;' : ''}`,
-					title: embeddingsComplete 
-						? `Use ${this.settings.aiMode === 'local' ? 'local model' : 'AI'} to gather notes that have tags relevant to certain concepts that you provide.`
-						: 'Embeddings must be generated first. Use "Thoughtlands: Generate Initial Embeddings" command.'
+					style: 'width: 100%; padding: 8px; text-align: left;',
+					title: `Use ${this.settings.aiMode === 'local' ? 'local model' : 'AI'} to gather notes that have tags relevant to certain concepts that you provide.`
 				}
 			});
 			
-			if (embeddingsComplete) {
-				conceptButton.addEventListener('click', async () => {
-					await this.createRegionCommands.createRegionFromConcept();
-					await this.onRegionUpdate();
-					this.render();
+			conceptButton.addEventListener('click', async () => {
+				await this.createRegionCommands.createRegionFromConcept();
+				await this.onRegionUpdate();
+				this.render();
+			});
+		}
+
+		// Check if region creation is in progress
+		const plugin = this.plugin as any;
+		const creationStatus = plugin.getRegionCreationStatus ? plugin.getRegionCreationStatus() : { isCreating: false };
+		
+		// Show loading indicator if region creation is in progress
+		if (creationStatus.isCreating) {
+			const loadingSection = containerEl.createDiv({ 
+				attr: { 
+					style: 'padding: 15px; margin: 10px; border: 2px solid var(--text-accent); border-radius: 4px; background: var(--background-modifier-form-field-highlighted);' 
+				} 
+			});
+			
+			// Spinner and text
+			const loadingHeader = loadingSection.createDiv({ 
+				attr: { style: 'display: flex; align-items: center; margin-bottom: 8px;' } 
+			});
+			
+			// Simple spinner (rotating dots)
+			const spinner = loadingHeader.createDiv({
+				attr: { 
+					style: 'width: 16px; height: 16px; margin-right: 8px; border: 2px solid var(--text-muted); border-top-color: var(--text-accent); border-radius: 50%; animation: spin 1s linear infinite;'
+				}
+			});
+			
+			// Add CSS animation if not already added
+			if (!document.getElementById('thoughtlands-spinner-style')) {
+				const style = document.createElement('style');
+				style.id = 'thoughtlands-spinner-style';
+				style.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+				document.head.appendChild(style);
+			}
+			
+			loadingHeader.createEl('strong', { 
+				text: 'Creating Region...',
+				attr: { style: 'color: var(--text-accent);' }
+			});
+			
+			if (creationStatus.step) {
+				loadingSection.createEl('p', { 
+					text: creationStatus.step,
+					attr: { style: 'margin: 5px 0; font-size: 0.9em; color: var(--text-normal);' }
 				});
-			} else {
-				conceptButton.setAttribute('disabled', 'true');
+			}
+			
+			if (creationStatus.details) {
+				loadingSection.createEl('p', { 
+					text: creationStatus.details,
+					attr: { style: 'margin: 5px 0 0 0; font-size: 0.85em; color: var(--text-muted); font-style: italic;' }
+				});
 			}
 		}
 
 		const regions = this.regionService.getRegions();
 
-		if (regions.length === 0) {
+		if (regions.length === 0 && !creationStatus.isCreating) {
 			const emptyState = containerEl.createDiv({ 
 				attr: { style: 'padding: 20px; text-align: center; color: var(--text-muted);' } 
 			});
@@ -258,7 +350,11 @@ export class ThoughtlandsSidebarView extends ItemView {
 			return;
 		}
 
-		const regionsList = containerEl.createDiv({ attr: { style: 'padding: 10px;' } });
+		const regionsList = containerEl.createDiv({ 
+			attr: { 
+				style: 'padding: 10px; flex: 1; overflow-y: auto;' 
+			} 
+		});
 
 		regions.forEach(region => {
 			const regionCard = regionsList.createDiv({
@@ -278,7 +374,7 @@ export class ThoughtlandsSidebarView extends ItemView {
 
 			// Region info
 			const info = regionCard.createDiv({ attr: { style: 'font-size: 0.9em; color: var(--text-muted); margin-bottom: 8px;' } });
-			info.createEl('span', { text: `Mode: ${region.mode} • ` });
+			info.createEl('span', { text: `Mode: ${getModeDisplayName(region.mode, region)} • ` });
 			info.createEl('span', { text: `${region.notes.length} notes` });
 
 			// Action buttons

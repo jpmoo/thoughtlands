@@ -26,16 +26,16 @@ export class ConceptInputModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 
-		contentEl.createEl('h2', { text: 'Enter Concepts' });
+		contentEl.createEl('h2', { text: 'Enter Concept' });
 
 		// Concepts input
 		const conceptsLabel = contentEl.createEl('label', { 
-			text: 'Concepts (comma-separated):',
+			text: 'Describe your concept (a sentence or two):',
 			attr: { style: 'display: block; margin: 10px 0 5px 0;' }
 		});
 
 		this.conceptsInput = contentEl.createEl('textarea', {
-			placeholder: 'e.g., mentorship, belonging, community',
+			placeholder: 'e.g., I want to explore how mentorship and belonging create community connections',
 			attr: { 
 				style: 'width: 100%; margin: 5px 0 15px 0; padding: 5px; min-height: 60px;',
 				rows: '3'
@@ -109,17 +109,15 @@ export class ConceptInputModal extends Modal {
 			attr: { style: 'margin-left: 10px;' } 
 		});
 		submitButton.addEventListener('click', () => {
-			const concepts = this.conceptsInput.value
-				.split(',')
-				.map(c => c.trim())
-				.filter(c => c.length > 0);
+			const conceptText = this.conceptsInput.value.trim();
 
-			if (concepts.length === 0) {
+			if (conceptText.length === 0) {
 				return;
 			}
 
+			// Store as array with single element for backward compatibility
 			this.onSubmit({
-				concepts,
+				concepts: [conceptText],
 				scope: this.selectedScope
 			});
 			this.close();
@@ -127,14 +125,11 @@ export class ConceptInputModal extends Modal {
 
 		this.conceptsInput.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-				const concepts = this.conceptsInput.value
-					.split(',')
-					.map(c => c.trim())
-					.filter(c => c.length > 0);
+				const conceptText = this.conceptsInput.value.trim();
 
-				if (concepts.length > 0) {
+				if (conceptText.length > 0) {
 					this.onSubmit({
-						concepts,
+						concepts: [conceptText],
 						scope: this.selectedScope
 					});
 					this.close();

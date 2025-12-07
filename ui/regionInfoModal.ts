@@ -1,5 +1,5 @@
 import { App, Modal, TFile } from 'obsidian';
-import { Region } from '../models/region';
+import { Region, getModeDisplayName } from '../models/region';
 
 export class RegionInfoModal extends Modal {
 	private region: Region;
@@ -25,7 +25,7 @@ export class RegionInfoModal extends Modal {
 		// Region metadata
 		const metadata = contentEl.createDiv({ attr: { style: 'margin-bottom: 20px; padding: 10px; background: var(--background-secondary); border-radius: 4px;' } });
 		metadata.createEl('p', { 
-			text: `Mode: ${this.region.mode}`,
+			text: `Mode: ${getModeDisplayName(this.region.mode, this.region)}`,
 			attr: { style: 'margin: 5px 0;' }
 		});
 		metadata.createEl('p', { 
@@ -132,10 +132,13 @@ export class RegionInfoModal extends Modal {
 
 		if (this.region.mode === 'concept' && this.region.source.concepts) {
 			const conceptsDiv = sourceSection.createDiv({ attr: { style: 'margin-bottom: 15px;' } });
-			conceptsDiv.createEl('strong', { text: 'Concepts Entered:' });
-			const conceptsList = conceptsDiv.createEl('ul', { attr: { style: 'margin: 5px 0; padding-left: 20px;' } });
-			this.region.source.concepts.forEach(concept => {
-				conceptsList.createEl('li', { text: concept });
+			conceptsDiv.createEl('strong', { text: 'Concept Entered:' });
+			const conceptText = this.region.source.concepts.length === 1 
+				? this.region.source.concepts[0]
+				: this.region.source.concepts.join(', ');
+			conceptsDiv.createEl('p', { 
+				text: conceptText,
+				attr: { style: 'margin: 5px 0; padding: 8px; background: var(--background-secondary); border-radius: 4px;' }
 			});
 
 			// Tags returned by AI (stored when region was created)
@@ -145,6 +148,143 @@ export class RegionInfoModal extends Modal {
 				const tagsList = tagsDiv.createEl('ul', { attr: { style: 'margin: 5px 0; padding-left: 20px;' } });
 				this.region.source.tags.forEach(tag => {
 					tagsList.createEl('li', { text: `#${tag}` });
+				});
+			}
+
+			// Processing narrative (collapsible, default closed)
+			if (this.region.source.processingInfo) {
+				const narrativeSection = contentEl.createDiv({ 
+					attr: { style: 'margin-bottom: 20px; padding: 10px; background: var(--background-secondary); border-radius: 4px;' } 
+				});
+
+				// Collapsible header
+				const narrativeHeader = narrativeSection.createDiv({ 
+					attr: { 
+						style: 'display: flex; align-items: center; cursor: pointer; user-select: none; margin-bottom: 5px;'
+					}
+				});
+				
+				// Carat icon (pointing right when closed)
+				const carat = narrativeHeader.createSpan({ 
+					text: '▶',
+					attr: { 
+						style: 'font-size: 0.8em; margin-right: 5px; color: var(--text-muted); transition: transform 0.2s;'
+					}
+				});
+				
+				narrativeHeader.createEl('strong', { text: 'Processing Narrative' });
+				
+				// Narrative content container (initially hidden)
+				const narrativeContent = narrativeSection.createDiv({ 
+					attr: { 
+						style: 'display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--background-modifier-border);'
+					}
+				});
+				
+				let isExpanded = false;
+				
+				// Toggle function
+				const toggleNarrative = () => {
+					isExpanded = !isExpanded;
+					if (isExpanded) {
+						narrativeContent.style.display = 'block';
+						carat.textContent = '▼';
+					} else {
+						narrativeContent.style.display = 'none';
+						carat.textContent = '▶';
+					}
+				};
+				
+				narrativeHeader.addEventListener('click', toggleNarrative);
+
+				const info = this.region.source.processingInfo;
+				const narrativeText: string[] = [];
+
+				// Get the final tags that are actually displayed (after all filtering)
+				const finalDisplayedTags = this.region.source.tags || [];
+				const finalDisplayedCount = finalDisplayedTags.length;
+				
+				// The count before excerpt analysis - this is what we want to show
+				const beforeExcerptAnalysisCount = info.initialTags?.length || 0;
+				
+				// Step 1: Initial tags
+				const actualInitialCount = info.initialTags?.length || 0;
+				if (info.initialTags && info.initialTags.length > 0) {
+					const rawInitialCount = info.initialTagsCount || actualInitialCount;
+					
+					const conceptText = this.region.source.concepts?.length === 1 
+						? this.region.source.concepts[0]
+						: this.region.source.concepts?.join(', ') || '';
+					narrativeText.push(`The AI was first asked to suggest tags related to the concept "${conceptText}".`);
+					
+					if (rawInitialCount > actualInitialCount) {
+						narrativeText.push(`It suggested ${rawInitialCount} tag${rawInitialCount !== 1 ? 's' : ''}, but ${rawInitialCount - actualInitialCount} were invalid (not in your vault) and were filtered out, leaving ${actualInitialCount} valid tag${actualInitialCount !== 1 ? 's' : ''}.`);
+					} else {
+						narrativeText.push(`It returned ${actualInitialCount} valid tag${actualInitialCount !== 1 ? 's' : ''}.`);
+					}
+				}
+
+				// Step 2: Refinement with note excerpts
+				if (info.refinedTags && info.refinedTags.length > 0) {
+					const actualRefinedCount = info.refinedTags.length;
+					const rawRefinedCount = info.refinedTagsCount || actualRefinedCount;
+					const removedByRefinement = beforeExcerptAnalysisCount - actualRefinedCount;
+					const addedByRefinement = actualRefinedCount - beforeExcerptAnalysisCount;
+					
+					if (rawRefinedCount > actualRefinedCount) {
+						narrativeText.push(`The AI then reviewed sample excerpts from notes and refined the selection to ${rawRefinedCount} tag${rawRefinedCount !== 1 ? 's' : ''}, but ${rawRefinedCount - actualRefinedCount} were invalid and filtered out, leaving ${actualRefinedCount} valid tag${actualRefinedCount !== 1 ? 's' : ''}.`);
+					} else if (addedByRefinement > 0) {
+						// Tags were added during refinement
+						narrativeText.push(`The AI then reviewed sample excerpts from notes with these tags and expanded the selection to ${actualRefinedCount} most relevant tag${actualRefinedCount !== 1 ? 's' : ''}, adding ${addedByRefinement} additional relevant tag${addedByRefinement !== 1 ? 's' : ''} based on the note content.`);
+					} else if (removedByRefinement > 0) {
+						narrativeText.push(`The AI then reviewed sample excerpts from notes with these tags and refined the selection to ${actualRefinedCount} most relevant tag${actualRefinedCount !== 1 ? 's' : ''}, removing ${removedByRefinement} tag${removedByRefinement !== 1 ? 's' : ''} that were less directly relevant.`);
+					} else if (actualRefinedCount < beforeExcerptAnalysisCount) {
+						narrativeText.push(`The AI then reviewed sample excerpts from notes with these tags and refined the selection to ${actualRefinedCount} most relevant tag${actualRefinedCount !== 1 ? 's' : ''}.`);
+					} else {
+						narrativeText.push(`The AI then reviewed sample excerpts from notes with these tags to confirm their relevance.`);
+					}
+					
+					// Show if any tags were removed by ignore filtering
+					if (finalDisplayedCount !== actualRefinedCount) {
+						const ignoredCount = actualRefinedCount - finalDisplayedCount;
+						if (ignoredCount > 0) {
+							narrativeText.push(`After filtering by ignore settings, ${finalDisplayedCount} tag${finalDisplayedCount !== 1 ? 's were' : ' was'} used in the final region (${ignoredCount} tag${ignoredCount !== 1 ? 's were' : ' was'} ignored by your settings).`);
+						}
+					}
+				} else if (beforeExcerptAnalysisCount > 0) {
+					// If we have initial tags but no refined tags, show what happened
+					if (finalDisplayedCount !== beforeExcerptAnalysisCount) {
+						const removedCount = beforeExcerptAnalysisCount - finalDisplayedCount;
+						narrativeText.push(`After filtering, ${finalDisplayedCount} tag${finalDisplayedCount !== 1 ? 's were' : ' was'} used in the final region (${removedCount} tag${removedCount !== 1 ? 's were' : ' was'} removed).`);
+					} else {
+						narrativeText.push(`${beforeExcerptAnalysisCount} tag${beforeExcerptAnalysisCount !== 1 ? 's were' : ' was'} used in the final region.`);
+					}
+				}
+
+				// Step 3: Embedding analysis
+				if (info.embeddingFiltered) {
+					if (info.notesBeforeEmbedding !== undefined && info.notesBeforeEmbedding > 0) {
+						narrativeText.push(`Semantic similarity analysis was then applied to ${info.notesBeforeEmbedding} note${info.notesBeforeEmbedding !== 1 ? 's' : ''} found with the selected tags.`);
+					}
+					if (info.embeddingRemovedCount && info.embeddingRemovedCount > 0) {
+						const threshold = info.similarityThreshold ?? 0.7;
+						narrativeText.push(`${info.embeddingRemovedCount} note${info.embeddingRemovedCount !== 1 ? 's were' : ' was'} removed because ${info.embeddingRemovedCount !== 1 ? 'their semantic similarity scores were' : 'its semantic similarity score was'} below the threshold of ${threshold}.`);
+					}
+					if (info.embeddingAddedCount && info.embeddingAddedCount > 0) {
+						narrativeText.push(`Additionally, ${info.embeddingAddedCount} semantically similar note${info.embeddingAddedCount !== 1 ? 's were' : ' was'} found and added that didn't have the suggested tags but matched the concepts semantically.`);
+					} else if (info.embeddingRemovedCount === 0 && info.notesBeforeEmbedding !== undefined && info.notesBeforeEmbedding > 0) {
+						narrativeText.push(`All notes met the semantic similarity threshold and were kept.`);
+					}
+				} else if (info.notesBeforeEmbedding !== undefined) {
+					narrativeText.push(`Embedding-based filtering was not applied (embeddings not available or not using local model).`);
+				}
+
+				// Display narrative
+				narrativeText.forEach((text, index) => {
+					const para = narrativeContent.createEl('p', {
+						text: text,
+						attr: { style: `margin: ${index === 0 ? '0' : '8px'} 0; line-height: 1.5;` }
+					});
 				});
 			}
 		} else if (this.region.mode === 'search+tags' && this.region.source.tags) {

@@ -75,6 +75,10 @@ export class EmbeddingService {
 		return hasLastFullBuild;
 	}
 
+	isEmbeddingProcessInProgress(): boolean {
+		return this.isProcessing;
+	}
+
 	async checkOllamaStatus(): Promise<EmbeddingStatus> {
 		try {
 			// Check if Ollama is running and model is available
@@ -127,7 +131,7 @@ export class EmbeddingService {
 						},
 						body: JSON.stringify({
 							model: this.settings.ollamaEmbeddingModel,
-							prompt: 'test',
+							input: 'test', // Ollama uses "input" not "prompt" for embeddings
 						}),
 					});
 					
@@ -141,7 +145,7 @@ export class EmbeddingService {
 							},
 							body: JSON.stringify({
 								model: this.settings.ollamaEmbeddingModel,
-								prompt: 'test',
+								input: 'test', // Ollama uses "input" not "prompt" for embeddings
 							}),
 						});
 					}
@@ -187,74 +191,199 @@ export class EmbeddingService {
 			return this.embeddingCache.get(cacheKey)!;
 		}
 
-		try {
-			// Try /api/embed first, then fallback to /api/embeddings if needed
-			let response = await fetch(`${this.settings.ollamaUrl}/api/embed`, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-				},
-				body: JSON.stringify({
-					model: this.settings.ollamaEmbeddingModel,
-					prompt: text,
-				}),
-			});
-
-			// If 404/405, try /api/embeddings (plural) as fallback
-			if (!response.ok && (response.status === 404 || response.status === 405)) {
-				console.log('[Thoughtlands:EmbeddingService] /api/embed failed, trying /api/embeddings');
-				response = await fetch(`${this.settings.ollamaUrl}/api/embeddings`, {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-					},
-					body: JSON.stringify({
+		// Retry logic for transient errors
+		const maxRetries = 3;
+		let lastError: Error | null = null;
+		
+		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+			try {
+				// Log the request details (only on first attempt)
+				if (attempt === 0) {
+					console.log(`[Thoughtlands:EmbeddingService] Sending embedding request:`, {
+						url: `${this.settings.ollamaUrl}/api/embed`,
 						model: this.settings.ollamaEmbeddingModel,
-						prompt: text,
-					}),
-				});
-			}
+						textLength: text.length,
+						textPreview: text.substring(0, 100)
+					});
+				} else {
+					console.log(`[Thoughtlands:EmbeddingService] Retry attempt ${attempt}/${maxRetries} for embedding request`);
+				}
+				
+				const requestBody = {
+					model: this.settings.ollamaEmbeddingModel,
+					input: text, // Ollama uses "input" not "prompt" for embeddings
+				};
+				
+				// Try /api/embed first, then fallback to /api/embeddings if needed
+				let response: Response;
+				try {
+					// Add timeout to prevent hanging (30 seconds)
+					const controller = new AbortController();
+					const timeoutId = setTimeout(() => controller.abort(), 30000);
+					
+					try {
+						response = await fetch(`${this.settings.ollamaUrl}/api/embed`, {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json',
+							},
+							body: JSON.stringify(requestBody),
+							signal: controller.signal,
+						});
+						clearTimeout(timeoutId);
+					} catch (fetchError) {
+						clearTimeout(timeoutId);
+						if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+							throw new Error('Request timeout after 30 seconds');
+						}
+						throw fetchError;
+					}
 
-			if (!response.ok) {
-				const errorText = await response.text();
-				throw new Error(`Ollama API error: ${response.status} - ${errorText}`);
-			}
+					// If 404/405, try /api/embeddings (plural) as fallback
+					if (!response.ok && (response.status === 404 || response.status === 405)) {
+						console.log('[Thoughtlands:EmbeddingService] /api/embed failed, trying /api/embeddings');
+						try {
+							// Add timeout for fallback request too
+							const fallbackController = new AbortController();
+							const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), 30000);
+							
+							try {
+								response = await fetch(`${this.settings.ollamaUrl}/api/embeddings`, {
+									method: 'POST',
+									headers: {
+										'Content-Type': 'application/json',
+									},
+									body: JSON.stringify({
+										model: this.settings.ollamaEmbeddingModel,
+										input: text, // Ollama uses "input" not "prompt" for embeddings
+									}),
+									signal: fallbackController.signal,
+								});
+								clearTimeout(fallbackTimeoutId);
+							} catch (fallbackFetchError) {
+								clearTimeout(fallbackTimeoutId);
+								if (fallbackFetchError instanceof Error && fallbackFetchError.name === 'AbortError') {
+									throw new Error('Fallback request timeout after 30 seconds');
+								}
+								throw fallbackFetchError;
+							}
+						} catch (fallbackError) {
+							// If fallback fetch throws, use the original response for error reporting
+							console.error('[Thoughtlands:EmbeddingService] Fallback fetch failed:', fallbackError);
+							// Re-throw as a more descriptive error
+							throw new Error(`Failed to connect to Ollama embedding endpoint: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}`);
+						}
+					}
+				} catch (fetchError) {
+					// Network error or other fetch failure
+					const error = new Error(`Failed to connect to Ollama: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}`);
+					(error as any).retryable = true; // Network errors are retryable
+					if (attempt < maxRetries) {
+						const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
+						console.warn(`[Thoughtlands:EmbeddingService] Network error, waiting ${delay}ms before retry...`);
+						await new Promise(resolve => setTimeout(resolve, delay));
+						lastError = error;
+						continue; // Retry
+					}
+					throw error;
+				}
+
+				if (!response.ok) {
+					let errorText = '';
+					try {
+						errorText = await response.text();
+					} catch (textError) {
+						errorText = `Unable to read error response: ${textError instanceof Error ? textError.message : 'Unknown error'}`;
+					}
+					const error = new Error(`Ollama API error: ${response.status} - ${errorText}`);
+					// Mark as retryable for 500 errors (server issues) or connection errors
+					const isRetryable = response.status === 500 || response.status >= 502;
+					(error as any).retryable = isRetryable;
+					
+					// If retryable and we have retries left, wait and retry
+					if (isRetryable && attempt < maxRetries) {
+						const delay = Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5s
+						console.warn(`[Thoughtlands:EmbeddingService] Retryable error, waiting ${delay}ms before retry...`);
+						await new Promise(resolve => setTimeout(resolve, delay));
+						lastError = error;
+						continue; // Retry
+					}
+					
+					throw error;
+				}
+				
+				// Success - break out of retry loop
+				lastError = null;
 
 			const data = await response.json();
 			
-			// Ollama may return 'embedding' (singular) or 'embeddings' (plural) array
-			let embedding: number[] | undefined;
-			if (data.embedding) {
-				embedding = Array.isArray(data.embedding) ? data.embedding : undefined;
-			} else if (data.embeddings && Array.isArray(data.embeddings)) {
-				// If it's an array, take the first element
-				embedding = data.embeddings[0] || undefined;
-			}
+				// Log the response structure
+				console.log(`[Thoughtlands:EmbeddingService] Received embedding response:`, {
+				status: response.status,
+				hasEmbedding: !!data.embedding,
+				hasEmbeddings: !!data.embeddings,
+				keys: Object.keys(data),
+				embeddingType: Array.isArray(data.embedding) ? 'array' : typeof data.embedding,
+				embeddingsType: Array.isArray(data.embeddings) ? 'array' : typeof data.embeddings,
+				embeddingsLength: Array.isArray(data.embeddings) ? data.embeddings.length : 0,
+				embeddingLength: Array.isArray(data.embedding) ? data.embedding.length : 'N/A',
+				model: data.model
+			});
 			
-			if (!embedding || embedding.length === 0) {
-				// Log detailed error information
-				console.error('[Thoughtlands:EmbeddingService] Invalid embedding response:', {
-					hasEmbedding: !!data.embedding,
-					hasEmbeddings: !!data.embeddings,
-					keys: Object.keys(data),
-					embeddingType: Array.isArray(data.embedding) ? 'array' : typeof data.embedding,
-					embeddingsType: Array.isArray(data.embeddings) ? 'array' : typeof data.embeddings,
-					embeddingsLength: Array.isArray(data.embeddings) ? data.embeddings.length : 0,
-					textLength: text.length,
-					textPreview: text.substring(0, 100),
-					fullResponse: JSON.stringify(data)
-				});
-				throw new Error(`Invalid embedding response: ${JSON.stringify(data)}. This may indicate the model is not properly loaded or the text is too short.`);
+				// Ollama may return 'embedding' (singular) or 'embeddings' (plural) array
+				let embedding: number[] | undefined;
+				if (data.embedding) {
+					embedding = Array.isArray(data.embedding) ? data.embedding : undefined;
+				} else if (data.embeddings && Array.isArray(data.embeddings)) {
+					// If it's an array, take the first element
+					embedding = data.embeddings[0] || undefined;
+				}
+				
+				if (!embedding || embedding.length === 0) {
+					// Check if model needs to be pulled/loaded
+					if (data.model && data.embeddings && Array.isArray(data.embeddings) && data.embeddings.length === 0) {
+						console.warn(`[Thoughtlands:EmbeddingService] Model "${data.model}" returned empty embeddings. This may indicate the model needs to be pulled or loaded. Try running: ollama pull ${this.settings.ollamaEmbeddingModel}`);
+					}
+					
+					// Log detailed error information
+					console.error('[Thoughtlands:EmbeddingService] Invalid embedding response:', {
+						hasEmbedding: !!data.embedding,
+						hasEmbeddings: !!data.embeddings,
+						keys: Object.keys(data),
+						embeddingType: Array.isArray(data.embedding) ? 'array' : typeof data.embedding,
+						embeddingsType: Array.isArray(data.embeddings) ? 'array' : typeof data.embeddings,
+						embeddingsLength: Array.isArray(data.embeddings) ? data.embeddings.length : 0,
+						textLength: text.length,
+						textPreview: text.substring(0, 100),
+						fullResponse: JSON.stringify(data)
+					});
+					throw new Error(`Invalid embedding response: ${JSON.stringify(data)}. This may indicate the model is not properly loaded. Try running: ollama pull ${this.settings.ollamaEmbeddingModel}`);
+				}
+
+				// Cache the result
+				this.embeddingCache.set(cacheKey, embedding);
+
+				return embedding;
+			} catch (error: any) {
+				lastError = error;
+				// If it's retryable and we have retries left, continue the loop
+				if (error.retryable && attempt < maxRetries) {
+					const delay = Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5s
+					console.warn(`[Thoughtlands:EmbeddingService] Retryable error (${error.message}), waiting ${delay}ms before retry...`);
+					await new Promise(resolve => setTimeout(resolve, delay));
+					continue;
+				}
+				// Not retryable or out of retries - throw
+				console.error('[Thoughtlands:EmbeddingService] Error generating embedding:', error);
+				throw error;
 			}
-
-			// Cache the result
-			this.embeddingCache.set(cacheKey, embedding);
-
-			return embedding;
-		} catch (error) {
-			console.error('[Thoughtlands:EmbeddingService] Error generating embedding:', error);
-			throw error;
 		}
+		
+		// If we get here, all retries failed
+		if (lastError) {
+			throw lastError;
+		}
+		throw new Error('Failed to generate embedding after retries');
 	}
 
 	async generateEmbeddingForFile(file: TFile): Promise<number[]> {
@@ -268,6 +397,15 @@ export class EmbeddingService {
 			const content = await this.app.vault.read(file);
 			// Use first 2000 characters for embedding (models have token limits)
 			const text = content.substring(0, 2000).trim();
+			
+			// Log file details for debugging
+			console.log(`[Thoughtlands:EmbeddingService] Processing file: ${file.path}`, {
+				fullContentLength: content.length,
+				textLength: text.length,
+				textPreview: text.substring(0, 200),
+				hasContent: !!content,
+				hasText: !!text
+			});
 			
 			// Skip empty files
 			if (!text || text.length === 0) {
@@ -313,12 +451,16 @@ export class EmbeddingService {
 			return results;
 		}
 
-		// Ollama's /api/embeddings endpoint accepts a single prompt, not an array
-		// So we'll process them in parallel but make individual requests
-		console.log(`[Thoughtlands:EmbeddingService] Generating embeddings for ${files.length} files in parallel`);
+		// Process files with throttling to avoid overwhelming Ollama
+		// Limit to 1 concurrent request to prevent crashes (Ollama is very sensitive)
+		const CONCURRENT_LIMIT = 1;
+		console.log(`[Thoughtlands:EmbeddingService] Generating embeddings for ${files.length} files (max ${CONCURRENT_LIMIT} concurrent)`);
 		
 		try {
-			const embeddingPromises = files.map(async (file) => {
+			// Process files in batches to limit concurrency
+			for (let i = 0; i < files.length; i += CONCURRENT_LIMIT) {
+				const batch = files.slice(i, i + CONCURRENT_LIMIT);
+				const batchPromises = batch.map(async (file) => {
 				try {
 					const content = await this.app.vault.read(file);
 					const text = content.substring(0, 2000);
@@ -329,34 +471,50 @@ export class EmbeddingService {
 					}
 
 					// Try /api/embed first, then fallback to /api/embeddings if needed
-					let response = await fetch(`${this.settings.ollamaUrl}/api/embed`, {
-						method: 'POST',
-						headers: {
-							'Content-Type': 'application/json',
-						},
-						body: JSON.stringify({
-							model: this.settings.ollamaEmbeddingModel,
-							prompt: text,
-						}),
-					});
-
-					// If 404/405, try /api/embeddings (plural) as fallback
-					if (!response.ok && (response.status === 404 || response.status === 405)) {
-						console.log(`[Thoughtlands:EmbeddingService] /api/embed failed for ${file.path}, trying /api/embeddings`);
-						response = await fetch(`${this.settings.ollamaUrl}/api/embeddings`, {
+					let response: Response;
+					try {
+						response = await fetch(`${this.settings.ollamaUrl}/api/embed`, {
 							method: 'POST',
 							headers: {
 								'Content-Type': 'application/json',
 							},
 							body: JSON.stringify({
 								model: this.settings.ollamaEmbeddingModel,
-								prompt: text,
+								input: text, // Ollama uses "input" not "prompt" for embeddings
 							}),
 						});
+
+						// If 404/405, try /api/embeddings (plural) as fallback
+						if (!response.ok && (response.status === 404 || response.status === 405)) {
+							console.log(`[Thoughtlands:EmbeddingService] /api/embed failed for ${file.path}, trying /api/embeddings`);
+							try {
+								response = await fetch(`${this.settings.ollamaUrl}/api/embeddings`, {
+									method: 'POST',
+									headers: {
+										'Content-Type': 'application/json',
+									},
+									body: JSON.stringify({
+										model: this.settings.ollamaEmbeddingModel,
+										input: text, // Ollama uses "input" not "prompt" for embeddings
+									}),
+								});
+							} catch (fallbackError) {
+								console.error(`[Thoughtlands:EmbeddingService] Fallback fetch failed for ${file.path}:`, fallbackError);
+								return null;
+							}
+						}
+					} catch (fetchError) {
+						console.error(`[Thoughtlands:EmbeddingService] Network error for ${file.path}:`, fetchError);
+						return null;
 					}
 
 					if (!response.ok) {
-						const errorText = await response.text();
+						let errorText = '';
+						try {
+							errorText = await response.text();
+						} catch (textError) {
+							errorText = `Unable to read error response: ${textError instanceof Error ? textError.message : 'Unknown error'}`;
+						}
 						console.error(`[Thoughtlands:EmbeddingService] Error for ${file.path}:`, {
 							status: response.status,
 							error: errorText
@@ -400,30 +558,32 @@ export class EmbeddingService {
 					console.error(`[Thoughtlands:EmbeddingService] Exception generating embedding for ${file.path}:`, error);
 					return null;
 				}
-			});
+				});
 
-			const embeddingResults = await Promise.all(embeddingPromises);
-			
-			// Store embeddings
-			const updates = new Map<TFile, { hash: string; embedding: number[] }>();
-			
-			for (const result of embeddingResults) {
-				if (!result) continue;
+				const batchResults = await Promise.all(batchPromises);
 				
-				const { file, embedding } = result;
-				results.set(file, embedding);
+				// Store embeddings from this batch
+				const updates = new Map<TFile, { hash: string; embedding: number[] }>();
 				
-				const hash = await this.storageService.computeHash(file);
-				updates.set(file, { hash, embedding });
-				console.log(`[Thoughtlands:EmbeddingService] Prepared embedding for ${file.path} (hash: ${hash}, embedding length: ${embedding.length})`);
-			}
-			
-			if (updates.size > 0) {
-				console.log(`[Thoughtlands:EmbeddingService] Saving ${updates.size} embeddings to storage...`);
-				await this.storageService.updateEmbeddings(updates);
-				console.log(`[Thoughtlands:EmbeddingService] Successfully saved ${updates.size} embeddings`);
-			} else {
-				console.warn('[Thoughtlands:EmbeddingService] No embeddings to save from batch. All requests may have failed.');
+				for (const result of batchResults) {
+					if (!result) continue;
+					
+					const { file, embedding } = result;
+					results.set(file, embedding);
+					
+					const hash = await this.storageService.computeHash(file);
+					updates.set(file, { hash, embedding });
+				}
+				
+				if (updates.size > 0) {
+					await this.storageService.updateEmbeddings(updates);
+				}
+				
+				// Delay between batches to avoid overwhelming Ollama
+				// Since we're processing 1 at a time, add a small delay between each file
+				if (i + CONCURRENT_LIMIT < files.length) {
+					await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay between files
+				}
 			}
 			
 			return results;
@@ -581,13 +741,30 @@ export class EmbeddingService {
 
 		console.log(`[Thoughtlands:EmbeddingService] Finding similar notes from ${candidateFiles.length} candidates, excluding ${excludeFiles.length} files`);
 
+		// Only check files that already have embeddings - don't generate new ones on the fly
+		// This prevents 500 errors from trying to generate embeddings for too many files at once
+		const filesWithEmbeddings: TFile[] = [];
 		for (const file of candidateFiles) {
 			if (excludePaths.has(file.path)) {
 				continue;
 			}
+			// Check if file already has an embedding
+			const hasEmbedding = await this.storageService.hasEmbedding(file);
+			if (hasEmbedding) {
+				filesWithEmbeddings.push(file);
+			}
+		}
 
+		console.log(`[Thoughtlands:EmbeddingService] Found ${filesWithEmbeddings.length} files with existing embeddings out of ${candidateFiles.length} candidates`);
+
+		for (const file of filesWithEmbeddings) {
 			try {
-				const embedding = await this.generateEmbeddingForFile(file);
+				// Get existing embedding from storage (don't generate new ones)
+				const embedding = await this.storageService.getEmbedding(file);
+				if (!embedding) {
+					continue; // Skip if no embedding found
+				}
+				
 				const similarity = this.cosineSimilarity(centroid, embedding);
 
 				if (similarity >= this.settings.embeddingSimilarityThreshold) {

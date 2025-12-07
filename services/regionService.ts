@@ -66,40 +66,117 @@ export class RegionService {
 		return this.regions.find(r => r.id === id) || null;
 	}
 
-	filterNotesByIgnores(files: TFile[]): TFile[] {
+	filterNotesByIgnores(files: TFile[], metadataCache?: any, noteService?: any): TFile[] {
+		const isBatch = files.length > 1;
+		
+		// Log filter settings for debugging (only for batches, not individual files)
+		if (isBatch) {
+			console.log('[Thoughtlands:RegionService] Filtering files with settings:', {
+				includedPaths: this.settings.includedPaths,
+				ignoredPaths: this.settings.ignoredPaths,
+				includedTags: this.settings.includedTags,
+				ignoredTags: this.settings.ignoredTags,
+				totalFiles: files.length
+			});
+		}
+		
 		const filtered = files.filter(file => {
 			const filePath = file.path.toLowerCase();
 			
 			// Check included paths (if specified)
 			if (this.settings.includedPaths.length > 0) {
-				const isIncluded = this.settings.includedPaths.some(included => 
-					filePath.startsWith(included.toLowerCase()) || 
-					filePath.includes(included.toLowerCase())
-				);
+				const isIncluded = this.settings.includedPaths.some(included => {
+					const includedLower = included.toLowerCase();
+					const startsWith = filePath.startsWith(includedLower);
+					const includes = filePath.includes(includedLower);
+					if (startsWith || includes && isBatch) {
+						console.log(`[Thoughtlands:RegionService] File ${file.path} matches included path: ${included}`);
+					}
+					return startsWith || includes;
+				});
 				if (!isIncluded) {
+					// Only log for batches, not individual file checks
+					if (isBatch) {
+						console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (not in included paths: ${this.settings.includedPaths.join(', ')})`);
+					}
 					return false;
 				}
 			}
 			
 			// Check ignored paths
-			const isIgnored = this.settings.ignoredPaths.some(ignored => 
-				filePath.includes(ignored.toLowerCase())
-			);
+			const isIgnored = this.settings.ignoredPaths.some(ignored => {
+				const ignoredLower = ignored.toLowerCase();
+				return filePath.includes(ignoredLower);
+			});
 			if (isIgnored) {
+				// Only log for batches, not individual file checks
+				if (isBatch) {
+					console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (in ignored paths)`);
+				}
 				return false;
+			}
+			
+			// Check tags if metadataCache and noteService are provided
+			if (metadataCache && noteService) {
+				const fileCache = metadataCache.getFileCache(file);
+				if (fileCache) {
+					const fileTags = noteService['extractTags'](fileCache);
+					const fileTagsLower = fileTags.map((ft: string) => ft.toLowerCase());
+					
+					// Check ignored tags
+					const hasIgnoredTag = this.settings.ignoredTags.some(ignored => {
+						const ignoredLower = ignored.toLowerCase();
+						return fileTagsLower.includes(ignoredLower);
+					});
+					if (hasIgnoredTag) {
+						if (isBatch) {
+							console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (has ignored tag)`);
+						}
+						return false;
+					}
+					
+					// Check included tags (if specified)
+					if (this.settings.includedTags.length > 0) {
+						const hasIncludedTag = fileTagsLower.some((fileTag: string) =>
+							this.settings.includedTags.some(included =>
+								included.toLowerCase() === fileTag
+							)
+						);
+						if (!hasIncludedTag) {
+							if (isBatch) {
+								console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (no included tags). File tags: [${fileTags.join(', ')}], Required tags: [${this.settings.includedTags.join(', ')}]`);
+							}
+							return false;
+						}
+					}
+				} else {
+					// If no file cache, check if we should exclude it
+					// For included tags, if no cache, we can't verify tags, so exclude it
+					if (this.settings.includedTags.length > 0) {
+						if (isBatch) {
+							console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (no file cache, cannot verify included tags)`);
+						}
+						return false;
+					}
+				}
 			}
 			
 			return true;
 		});
-		// Only log summary if there's a significant difference
-		if (files.length > 10 && filtered.length < files.length * 0.5) {
-			console.log('[Thoughtlands:RegionService] Path filtering:', {
+		
+		// Log summary only for batches
+		if (isBatch) {
+			console.log('[Thoughtlands:RegionService] Filtering result:', {
 				original: files.length,
 				filtered: filtered.length,
+				excluded: files.length - filtered.length,
 				includedPaths: this.settings.includedPaths,
-				ignoredPaths: this.settings.ignoredPaths
+				ignoredPaths: this.settings.ignoredPaths,
+				includedTags: this.settings.includedTags,
+				ignoredTags: this.settings.ignoredTags
 			});
 		}
+		
 		return filtered;
 	}
 

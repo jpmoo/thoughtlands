@@ -23,7 +23,7 @@ export class OpenAIService {
 		this.cache = cache;
 	}
 
-	async getRelatedTags(concepts: string[], scope: ConceptScope = 'regular', tagSamples?: Map<string, string[]>): Promise<OpenAIResponse> {
+	async getRelatedTags(concepts: string[], scope: ConceptScope = 'regular', tagSamples?: Map<string, string[]>, availableTags?: string[]): Promise<OpenAIResponse> {
 		console.log('[Thoughtlands:OpenAI] getRelatedTags called with concepts:', concepts, 'scope:', scope);
 		
 		if (!this.settings.openAIApiKey) {
@@ -68,7 +68,7 @@ export class OpenAIService {
 					messages: [
 						{
 							role: 'system',
-							content: 'You are a helpful assistant that suggests Obsidian tags based on concepts. Return only a JSON array of tag names (without # prefix), nothing else.',
+							content: 'You are a tag selection assistant. You MUST ONLY return tags that appear in the provided VALID TAGS list. Any tag not in that list will be automatically rejected. Return ONLY a JSON array of tag names (without # prefix), nothing else.',
 						},
 						{
 							role: 'user',
@@ -107,8 +107,18 @@ export class OpenAIService {
 			// Parse JSON array from response
 			let tags: string[] = [];
 			try {
+				// Strip markdown code blocks if present
+				let jsonContent = content.trim();
+				if (jsonContent.startsWith('```')) {
+					// Remove opening ```json or ```
+					jsonContent = jsonContent.replace(/^```(?:json)?\s*\n?/, '');
+					// Remove closing ```
+					jsonContent = jsonContent.replace(/\n?```\s*$/, '');
+					jsonContent = jsonContent.trim();
+				}
+				
 				// Try to parse as JSON
-				const parsed = JSON.parse(content);
+				const parsed = JSON.parse(jsonContent);
 				console.log('[Thoughtlands:OpenAI] Parsed JSON:', parsed);
 				if (Array.isArray(parsed)) {
 					tags = parsed;
@@ -118,17 +128,50 @@ export class OpenAIService {
 			} catch (parseError) {
 				console.log('[Thoughtlands:OpenAI] JSON parse failed, trying text extraction. Error:', parseError);
 				// If not JSON, try to extract tags from text
-				tags = content
+				// Strip markdown code blocks first
+				let textContent = content.trim();
+				if (textContent.startsWith('```')) {
+					textContent = textContent.replace(/^```(?:json)?\s*\n?/, '');
+					textContent = textContent.replace(/\n?```\s*$/, '');
+					textContent = textContent.trim();
+				}
+				tags = textContent
 					.split(/[,\n]/)
 					.map((t: string) => t.trim().replace(/^#/, '').replace(/[\[\]"]/g, ''))
-					.filter((t: string) => t.length > 0)
+					.filter((t: string) => t.length > 0 && !t.startsWith('```') && t !== '```')
 					.slice(0, maxTags);
 				console.log('[Thoughtlands:OpenAI] Extracted tags from text:', tags);
 			}
 
-			// Limit to maxTags for scope
-			tags = tags.slice(0, maxTags);
-			console.log('[Thoughtlands:OpenAI] Final tags after limiting:', tags);
+			// Validate tags against availableTags list (case-insensitive)
+			if (availableTags && availableTags.length > 0) {
+				const availableTagsSet = new Set(availableTags.map(t => t.toLowerCase()));
+				const validatedTags = tags
+					.map(tag => tag.trim().replace(/^#/, ''))
+					.filter(tag => {
+						if (!tag) return false;
+						const isValid = availableTagsSet.has(tag.toLowerCase());
+						if (!isValid) {
+							console.warn(`[Thoughtlands:OpenAI] AI suggested invalid tag: "${tag}" (not in vault)`);
+						}
+						return isValid;
+					})
+					.map(tagLower => {
+						// Map back to original case from availableTags
+						const originalTag = availableTags.find(t => t.toLowerCase() === tagLower.toLowerCase());
+						return originalTag || tagLower;
+					})
+					.slice(0, maxTags);
+				
+				if (validatedTags.length < tags.length) {
+					console.warn(`[Thoughtlands:OpenAI] Filtered out ${tags.length - validatedTags.length} invalid tags from AI response`);
+				}
+				tags = validatedTags;
+			} else {
+				tags = tags.slice(0, maxTags);
+			}
+			
+			console.log('[Thoughtlands:OpenAI] Final validated tags:', tags);
 
 			// Cache the result
 			this.cache.set(cacheKey, tags);
@@ -163,23 +206,38 @@ export class OpenAIService {
 		return this.buildTagSuggestionPrompt(concepts, scope, maxTags, tagSamples);
 	}
 
-	private buildTagSuggestionPrompt(concepts: string[], scope: ConceptScope, maxTags: number, tagSamples?: Map<string, string[]>): string {
+	private buildTagSuggestionPrompt(concepts: string[], scope: ConceptScope, maxTags: number, tagSamples?: Map<string, string[]>, availableTags?: string[]): string {
 		let scopeDescription = '';
 		switch (scope) {
 			case 'narrow':
-				scopeDescription = 'the top tags, up to 10';
+				scopeDescription = '10-15 highly relevant tags';
 				break;
 			case 'regular':
-				scopeDescription = 'the top tags, up to 30';
+				scopeDescription = '20-30 relevant tags';
 				break;
 			case 'broad':
-				scopeDescription = 'up to 50 related tags';
+				scopeDescription = '40-50 related tags';
 				break;
 		}
 
-		let prompt = `Given these concepts: ${concepts.join(', ')}
-
-Suggest ${scopeDescription} that would be relevant to notes about these concepts. `;
+		// Start with the constraint FIRST - make it absolutely clear
+		let prompt = '';
+		if (availableTags && availableTags.length > 0) {
+			// Include all tags - never truncate, as truncating causes AI to invent tags from missing ones
+			// For very large lists, we'll include them all but format more compactly
+			const tagList = availableTags.map(t => `#${t}`).join(', ');
+			
+			prompt += `CRITICAL CONSTRAINT: You MUST ONLY return tags from this exact list. Any tag not in this list will be rejected. Do NOT invent, create, or suggest any tags that are not in this list.\n\n`;
+			prompt += `VALID TAGS ONLY (${availableTags.length} tags total):\n${tagList}\n\n`;
+			const conceptText = concepts.length === 1 ? concepts[0] : concepts.join(', ');
+			prompt += `Given this concept: ${conceptText}\n\n`;
+			prompt += `Find and return ${scopeDescription} from the VALID TAGS list above that relate to this concept. `;
+			prompt += `Be comprehensive - include tags that are directly related, indirectly related, or tangentially related to these concepts. `;
+			prompt += `You MUST select tags ONLY from the list above. Every tag you return MUST appear exactly (case-insensitive) in that list. `;
+		} else {
+			const conceptText = concepts.length === 1 ? concepts[0] : concepts.join(', ');
+			prompt = `Given this concept: ${conceptText}\n\nSuggest ${scopeDescription} that would be relevant to notes about this concept. `;
+		}
 
 		// Add tag samples if provided to help AI understand relationships
 		if (tagSamples && tagSamples.size > 0) {
@@ -199,12 +257,16 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 			prompt += `Use these examples to understand how tags relate to content, and choose tags that would be relevant to a synthesis of the concepts provided. `;
 		}
 
-		prompt += `\nReturn only a JSON array of tag names (without the # prefix).`;
+		if (availableTags && availableTags.length > 0) {
+			prompt += `\n\nFINAL REMINDER: Return ONLY tags from the VALID TAGS list above. Any tag not in that list will be automatically rejected. Return only a JSON array of tag names (without the # prefix).`;
+		} else {
+			prompt += `\nReturn only a JSON array of tag names (without the # prefix).`;
+		}
 
 		return prompt;
 	}
 
-	async filterTagsByRelevance(concepts: string[], tags: string[], tagSamples: Map<string, string[]>, maxTags: number): Promise<OpenAIResponse> {
+	async filterTagsByRelevance(concepts: string[], tags: string[], tagSamples: Map<string, string[]>, maxTags: number, availableTags?: string[]): Promise<OpenAIResponse> {
 		console.log('[Thoughtlands:OpenAI] filterTagsByRelevance called with', tags.length, 'tags, maxTags:', maxTags);
 		
 		if (!this.settings.openAIApiKey) {
@@ -213,6 +275,11 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 		}
 
 		try {
+			// Create availableTagsSet for validation if provided
+			const availableTagsSet = availableTags && availableTags.length > 0 
+				? new Set(availableTags.map(t => t.toLowerCase()))
+				: null;
+			
 			// Batch tags to ensure all are covered
 			const maxSamplesPerTag = 3;
 			const maxCharsPerExcerpt = 200;
@@ -264,7 +331,8 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 				console.log(`[Thoughtlands:OpenAI] Processing batch ${i + 1}/${batches.length} with ${batch.length} tags`);
 				
 				// Build prompt for this batch
-				let prompt = `Given these concepts: ${concepts.join(', ')}\n\n`;
+				const conceptText = concepts.length === 1 ? concepts[0] : concepts.join(', ');
+				let prompt = `Given this concept: ${conceptText}\n\n`;
 				prompt += `Here are ${batch.length} candidate tags (batch ${i + 1} of ${batches.length}) with sample excerpts from notes:\n\n`;
 				
 				for (const tag of batch) {
@@ -285,8 +353,9 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 				// Calculate how many tags to select from this batch
 				// Distribute maxTags across batches proportionally
 				const tagsFromThisBatch = Math.ceil((batch.length / tags.length) * maxTags);
-				prompt += `\nBased on these concepts and the sample content, select up to ${tagsFromThisBatch} most relevant tags from this batch that would help find notes related to a synthesis of these concepts. `;
-				prompt += `Exclude tags that don't seem directly relevant. Return only a JSON array of the selected tag names (without the # prefix).`;
+				prompt += `\nBased on these concepts and the sample content, select up to ${tagsFromThisBatch} relevant tags from this batch that would help find notes related to a synthesis of these concepts. `;
+				prompt += `Include tags that are directly relevant, indirectly relevant, or provide useful context. `;
+				prompt += `Be comprehensive rather than restrictive. Return only a JSON array of the selected tag names (without the # prefix).`;
 				
 				console.log(`[Thoughtlands:OpenAI] Batch ${i + 1} prompt length:`, prompt.length, 'characters');
 				
@@ -320,7 +389,15 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 				if (content) {
 					let batchTags: string[] = [];
 					try {
-						const parsed = JSON.parse(content);
+						// Strip markdown code blocks if present
+						let jsonContent = content.trim();
+						if (jsonContent.startsWith('```')) {
+							jsonContent = jsonContent.replace(/^```(?:json)?\s*\n?/, '');
+							jsonContent = jsonContent.replace(/\n?```\s*$/, '');
+							jsonContent = jsonContent.trim();
+						}
+						
+						const parsed = JSON.parse(jsonContent);
 						if (Array.isArray(parsed)) {
 							batchTags = parsed;
 						} else if (typeof parsed === 'string') {
@@ -328,13 +405,37 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 						}
 					} catch (parseError) {
 						console.log(`[Thoughtlands:OpenAI] Batch ${i + 1} JSON parse failed, trying text extraction`);
-						batchTags = content
+						// Strip markdown code blocks first
+						let textContent = content.trim();
+						if (textContent.startsWith('```')) {
+							textContent = textContent.replace(/^```(?:json)?\s*\n?/, '');
+							textContent = textContent.replace(/\n?```\s*$/, '');
+							textContent = textContent.trim();
+						}
+						batchTags = textContent
 							.split(/[,\n]/)
 							.map((t: string) => t.trim().replace(/^#/, '').replace(/[\[\]"]/g, ''))
-							.filter((t: string) => t.length > 0);
+							.filter((t: string) => t.length > 0 && !t.startsWith('```') && t !== '```');
 					}
 					
-					batchTags.forEach(tag => allFilteredTags.add(tag));
+					// Validate and add tags from this batch
+					for (const tag of batchTags) {
+						const cleanTag = tag.trim().replace(/^#/, '');
+						if (!cleanTag) continue;
+						
+						// If availableTagsSet is provided, validate the tag
+						if (availableTagsSet) {
+							if (availableTagsSet.has(cleanTag.toLowerCase())) {
+								// Map back to original case
+								const originalTag = availableTags!.find(t => t.toLowerCase() === cleanTag.toLowerCase());
+								allFilteredTags.add(originalTag || cleanTag);
+							} else {
+								console.warn(`[Thoughtlands:OpenAI] Batch ${i + 1} - AI refined to invalid tag: "${cleanTag}" (not in vault)`);
+							}
+						} else {
+							allFilteredTags.add(cleanTag);
+						}
+					}
 					console.log(`[Thoughtlands:OpenAI] Batch ${i + 1} returned`, batchTags.length, 'tags');
 				}
 			}
@@ -346,9 +447,36 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 				finalTags = await this.selectTopTags(concepts, finalTags, tagSamples, maxTags);
 			}
 			
-			finalTags = finalTags.slice(0, maxTags);
-			console.log('[Thoughtlands:OpenAI] Final filtered tags:', finalTags.length, 'from', tags.length, 'original tags');
+			// Final validation pass if availableTags was provided
+			if (availableTags && availableTags.length > 0) {
+				const availableTagsSet = new Set(availableTags.map(t => t.toLowerCase()));
+				const validatedTags = finalTags
+					.map(tag => tag.trim().replace(/^#/, ''))
+					.filter(tag => {
+						if (!tag) return false;
+						const isValid = availableTagsSet.has(tag.toLowerCase());
+						if (!isValid) {
+							console.warn(`[Thoughtlands:OpenAI] Final validation - invalid tag: "${tag}" (not in vault)`);
+						}
+						return isValid;
+					})
+					.map(tagLower => {
+						// Map back to original case from availableTags
+						const originalTag = availableTags.find(t => t.toLowerCase() === tagLower.toLowerCase());
+						return originalTag || tagLower;
+					})
+					.slice(0, maxTags);
+				
+				if (validatedTags.length < finalTags.length) {
+					console.warn(`[Thoughtlands:OpenAI] Final validation filtered out ${finalTags.length - validatedTags.length} invalid tags`);
+				}
+				finalTags = validatedTags;
+			} else {
+				finalTags = finalTags.slice(0, maxTags);
+			}
 			
+			console.log('[Thoughtlands:OpenAI] Final validated filtered tags:', finalTags.length, 'from', tags.length, 'original tags');
+
 			return { success: true, tags: finalTags };
 		} catch (error) {
 			console.error('[Thoughtlands:OpenAI] Exception during filter API call:', error);
@@ -358,8 +486,10 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 
 	private async selectTopTags(concepts: string[], tags: string[], tagSamples: Map<string, string[]>, maxTags: number): Promise<string[]> {
 		// Final selection call when we have too many tags
-		let prompt = `Given these concepts: ${concepts.join(', ')}\n\n`;
-		prompt += `Select the ${maxTags} most relevant tags from this list: ${tags.join(', ')}\n\n`;
+		const conceptText = concepts.length === 1 ? concepts[0] : concepts.join(', ');
+		let prompt = `Given this concept: ${conceptText}\n\n`;
+		prompt += `Select up to ${maxTags} relevant tags from this list: ${tags.join(', ')}. `;
+		prompt += `Include tags that are directly or indirectly related to the concepts. Be comprehensive.\n\n`;
 		prompt += `Return only a JSON array of the ${maxTags} most relevant tag names (without the # prefix).`;
 		
 		try {
@@ -372,7 +502,7 @@ Suggest ${scopeDescription} that would be relevant to notes about these concepts
 				body: JSON.stringify({
 					model: this.settings.aiModel,
 					messages: [
-						{ role: 'system', content: 'You are a helpful assistant that selects the most relevant tags. Return only a JSON array of tag names (without # prefix), nothing else.' },
+						{ role: 'system', content: 'You are a helpful assistant that selects relevant tags comprehensively. Include tags that are directly or indirectly related. Return only a JSON array of tag names (without # prefix), nothing else.' },
 						{ role: 'user', content: prompt },
 					],
 					temperature: 0.7,
