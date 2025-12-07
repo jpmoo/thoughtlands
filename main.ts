@@ -137,7 +137,7 @@ export default class ThoughtlandsPlugin extends Plugin {
 			if (!this.settings.ollamaChatModel) this.settings.ollamaChatModel = 'llama3.2';
 			if (!this.settings.includedPaths) this.settings.includedPaths = [];
 			if (!this.settings.includedTags) this.settings.includedTags = [];
-			if (!this.settings.embeddingSimilarityThreshold) this.settings.embeddingSimilarityThreshold = 0.45;
+			if (!this.settings.embeddingSimilarityThreshold) this.settings.embeddingSimilarityThreshold = 0.65;
 			if (!this.settings.maxEmbeddingResults) this.settings.maxEmbeddingResults = 20;
 		} else {
 			this.settings = Object.assign({}, DEFAULT_SETTINGS);
@@ -431,8 +431,13 @@ export default class ThoughtlandsPlugin extends Plugin {
 			delete data.embeddings;
 			await this.saveData(data);
 			// Clear the in-memory cache
-			this.embeddingService.getStorageService()['embeddingsData'] = null;
+			const storageService = this.embeddingService.getStorageService();
+			storageService['embeddingsData'] = null;
+			// Force reload to ensure it's null
+			await storageService.loadEmbeddings();
 			console.log('[Thoughtlands] Embeddings deleted');
+			// Trigger sidebar re-render to show pre-embeddings mode
+			this.onRegionUpdate();
 		} catch (error) {
 			console.error('[Thoughtlands] Error deleting embeddings:', error);
 			throw error;

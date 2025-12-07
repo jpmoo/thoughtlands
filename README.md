@@ -9,7 +9,7 @@ Thoughtlands is an Obsidian plugin that organizes and visualizes conceptual rela
 ### Region Creation Methods
 
 1. **Create Region from Search Results** - Collects active search result files and creates a region
-2. **Create Region from Search Results + AI Analysis** - Uses semantic similarity analysis to find additional related notes beyond the search results (requires local AI mode)
+2. **Create Region from Search Results + AI Analysis** - Uses semantic similarity analysis to find additional related notes beyond the search results (requires local AI model)
 3. **Create Region from AI-Assisted Concept/Tag Analysis** - Uses AI (OpenAI or local model) to find related tags based on concepts, then gathers all notes using those tags. With local AI, can refine results using semantic similarity analysis.
 4. **Create Region from Semantic Similarity Analysis** - Directly finds notes semantically similar to descriptive text you provide (requires local AI mode)
 
@@ -110,7 +110,7 @@ Run `npm run build` to build the plugin for production.
 3. Select a scope (Narrow, Regular, or Broad)
 4. The plugin will:
    - Query AI (OpenAI or local model) for related tags
-   - Optionally refine tags by reviewing note excerpts
+   - Refine tags by reviewing note excerpts
    - Find all notes with those tags
    - If using local AI, apply semantic similarity filtering
    - Create a region with the selected notes
@@ -125,7 +125,7 @@ Run `npm run build` to build the plugin for production.
    - Find up to 100 notes semantically similar to your concept (based on similarity threshold)
    - Create a region with the matching notes
    
-   **Note:** Returns up to 100 notes. To be more selective, increase the embedding similarity threshold in settings (default: 0.45).
+   **Note:** Returns up to 100 notes. To be more selective, increase the embedding similarity threshold in settings (default: 0.65).
 
 ### Managing Regions
 
@@ -156,7 +156,7 @@ Configure the plugin in Obsidian Settings → Thoughtlands:
 - **Included Tags** - Only process notes with these tags (optional)
 - **Included Paths** - Only process notes in these paths (optional)
 - **Default Color Palette** - Default colors for new regions
-- **Embedding Similarity Threshold** - Minimum similarity score for semantic matching (0.0-1.0, default: 0.45)
+- **Embedding Similarity Threshold** - Minimum similarity score for semantic matching (0.0-1.0, default: 0.65)
 - **Max Related Tags** - Maximum tags to suggest from AI
 
 ## Data Format
@@ -177,7 +177,7 @@ Regions are exported to `regions.json` in the following format:
         "aiMode": "local",
         "processingInfo": {
           "initialTags": ["mentorship", "community"],
-          "similarityThreshold": 0.45
+          "similarityThreshold": 0.65
         }
       },
       "createdAt": "2024-01-01T00:00:00.000Z",

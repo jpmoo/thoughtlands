@@ -45,9 +45,27 @@ export class CreateRegionCommands {
 	}
 
 	async createRegionFromSearch(): Promise<void> {
-		// Get active search results and query
-		const searchResults = this.getActiveSearchResults();
-		const searchQuery = this.getActiveSearchQuery();
+		// Prompt for search terms
+		const searchTerms = await new Promise<string | null>((resolve) => {
+			const modal = new SimplePromptModal(
+				this.app,
+				'Enter Search Terms',
+				'Enter search terms to find matching notes (e.g., "John Adams" or "mentorship")',
+				(result: string) => {
+					resolve(result.trim() || null);
+				},
+				''
+			);
+			modal.open();
+		});
+
+		if (!searchTerms || searchTerms.trim() === '') {
+			return;
+		}
+
+		// Search for files matching the terms
+		const searchResults = await this.searchFiles(searchTerms);
+		const searchQuery = searchTerms;
 		
 		console.log('[Thoughtlands] ===== CREATE REGION FROM SEARCH =====');
 		console.log('[Thoughtlands] createRegionFromSearch: Found', searchResults.length, 'search results');
@@ -55,7 +73,7 @@ export class CreateRegionCommands {
 		console.log('[Thoughtlands] ======================================');
 		
 		if (searchResults.length === 0) {
-			new Notice('No search results found. Please perform a search first.');
+			new Notice('No search results found.');
 			return;
 		}
 
@@ -127,9 +145,27 @@ export class CreateRegionCommands {
 			return;
 		}
 
-		// Get active search results and query
-		const searchResults = this.getActiveSearchResults();
-		const searchQuery = this.getActiveSearchQuery();
+		// Prompt for search terms
+		const searchTerms = await new Promise<string | null>((resolve) => {
+			const modal = new SimplePromptModal(
+				this.app,
+				'Enter Search Terms',
+				'Enter search terms to find matching notes (e.g., "John Adams" or "mentorship")',
+				(result: string) => {
+					resolve(result.trim() || null);
+				},
+				''
+			);
+			modal.open();
+		});
+
+		if (!searchTerms || searchTerms.trim() === '') {
+			return;
+		}
+
+		// Search for files matching the terms
+		const searchResults = await this.searchFiles(searchTerms);
+		const searchQuery = searchTerms;
 		
 		if (searchResults.length === 0) {
 			new Notice('No search results found. Please perform a search first.');
@@ -1006,272 +1042,93 @@ export class CreateRegionCommands {
 		return queryString;
 	}
 
-	private getActiveSearchResults(): TFile[] {
-		// PRIMARY METHOD: Get search query and re-run the search programmatically
-		// This ensures we get ALL results, not just what's rendered in the DOM
+	private async searchFiles(searchTerms: string): Promise<TFile[]> {
+		// Search files using the provided search terms
+		// Applies plugin's own filters (included/excluded paths and tags)
 		
-		// Try multiple ways to find the search view
-		let searchView: any = null;
+		console.log('[Thoughtlands] Searching files with terms:', searchTerms);
 		
-		// Method 1: Get all search leaves
-		const searchLeaves = this.app.workspace.getLeavesOfType('search');
-		if (searchLeaves.length > 0) {
-			searchView = searchLeaves[0].view as any;
-		}
+		// Get all files and search them
+		const allFiles = this.app.vault.getMarkdownFiles();
+		const matchingFiles: TFile[] = [];
 		
-		// Method 2: Check active leaf if it's a search view
-		if (!searchView) {
-			const activeLeaf = this.app.workspace.activeLeaf;
-			if (activeLeaf && activeLeaf.view.getViewType() === 'search') {
-				searchView = activeLeaf.view as any;
-			}
-		}
+		// Split search terms into words (for multi-word queries)
+		const searchWords = searchTerms ? searchTerms.toLowerCase().split(/\s+/).filter((w: string) => w.length > 0) : [];
 		
-		// Method 3: Iterate through all leaves to find a search view
-		if (!searchView) {
-			this.app.workspace.iterateAllLeaves((leaf) => {
-				if (leaf.view.getViewType() === 'search') {
-					searchView = leaf.view as any;
-					return false; // Stop iteration
-				}
-			});
-		}
-		
-		if (!searchView) {
-			const errorMsg = '[Thoughtlands] ERROR: No search view found. Please open a search pane and run a search first.';
-			console.error(errorMsg);
-			// Show a user-friendly notice
-			new Notice('No search view found. Please open a search pane and run a search first.');
-			return [];
-		}
-		
-		// Check if search view has searchQuery
-		if (!searchView.searchQuery) {
-			const errorMsg = '[Thoughtlands] ERROR: Search view does not have searchQuery. The search may not have been executed yet.';
-			console.error(errorMsg);
-			new Notice('Search view found but no query. Please run a search first.');
-			return [];
-		}
-		
-		const queryString = searchView.searchQuery.query;
-		const matcher = searchView.searchQuery.matcher;
-		
-		if (!queryString || typeof queryString !== 'string' || queryString.trim() === '') {
-			console.error('[Thoughtlands] ERROR: No valid query string found in search view. Query string:', queryString);
-			new Notice('Search view found but query is empty. Please enter a search query first.');
-			return [];
-		}
-		
-		if (!matcher) {
-			const errorMsg = '[Thoughtlands] ERROR: No matcher found in search query. The search may not have been executed yet.';
-			console.error(errorMsg);
-			new Notice('Search query found but matcher is missing. Please wait for the search to complete.');
-			return [];
-		}
-		
-		// Use the matcher to test all files in the vault
-		try {
-			const allMarkdownFiles = this.app.vault.getMarkdownFiles();
-			const matchingFiles: TFile[] = [];
+		for (const file of allFiles) {
+			const fileCache = this.app.metadataCache.getFileCache(file);
+			if (!fileCache) continue;
 			
-			for (const file of allMarkdownFiles) {
-				const fileCache = this.app.metadataCache.getFileCache(file);
+			let matches = false;
+			
+			if (searchWords.length === 0) {
+				// No search terms, include all files (they'll be filtered by path/tag settings)
+				matches = true;
+			} else {
+				// Check metadata first (faster)
+				const searchableMetadata = (
+					file.path.toLowerCase() + ' ' +
+					file.basename.toLowerCase() + ' ' +
+					(fileCache.frontmatter ? JSON.stringify(fileCache.frontmatter).toLowerCase() : '') + ' ' +
+					(fileCache.tags ? fileCache.tags.map(t => t.tag.toLowerCase()).join(' ') : '') + ' ' +
+					(fileCache.links ? fileCache.links.map(l => (l.original || l.displayText || '').toLowerCase()).join(' ') : '')
+				);
 				
-				// Try multiple ways to use the matcher
-				let matches = false;
-				try {
-					if (typeof matcher === 'function') {
-						// Try with fileCache first
-						try {
-							matches = matcher(fileCache);
-						} catch (e1) {
-							// Try with file object
-							try {
-								matches = matcher(file);
-							} catch (e2) {
-								// Try with both
-								try {
-									matches = matcher(file, fileCache);
-								} catch (e3) {
-									// Skip this file
-								}
-							}
-						}
-					} else if (matcher && typeof matcher === 'object') {
-						// First, try calling the matcher as a function (it might be callable even with matchers array)
-						try {
-							// Try calling it directly as a function
-							matches = (matcher as any)(fileCache);
-						} catch (e1) {
-							try {
-								matches = (matcher as any)(file);
-							} catch (e2) {
-								// Continue to composite matcher handling
+				// Check if all words are in metadata
+				let allWordsInMetadata = true;
+				for (const word of searchWords) {
+					if (!searchableMetadata.includes(word)) {
+						allWordsInMetadata = false;
+						break;
+					}
+				}
+				
+				if (allWordsInMetadata) {
+					matches = true;
+				} else {
+					// Check file content
+					try {
+						const content = await this.app.vault.read(file);
+						const contentLower = content.toLowerCase();
+						
+						let allWordsInContent = true;
+						for (const word of searchWords) {
+							if (!contentLower.includes(word)) {
+								allWordsInContent = false;
+								break;
 							}
 						}
 						
-						// If we haven't found a match yet, try composite matcher approach
-						if (!matches && Array.isArray((matcher as any).matchers)) {
-							// Composite matcher - all matchers must match
-							const subMatchers = (matcher as any).matchers;
-							let allMatch = true;
-							
-							// Helper function to test a single matcher
-							const testSingleMatcher = (m: any): boolean => {
-								try {
-									// Try as function first
-									if (typeof m === 'function') {
-										try {
-											const result = m(fileCache);
-											return !!result;
-										} catch (e1) {
-											try {
-												const result = m(file);
-												return !!result;
-											} catch (e2) {
-												// Try with both
-												try {
-													const result = m(file, fileCache);
-													return !!result;
-												} catch (e3) {
-													return false;
-												}
-											}
-										}
-									}
-									
-									// Try as object with methods
-									if (m && typeof m === 'object') {
-										// Check for nested matcher
-										if (m.matcher) {
-											return testSingleMatcher(m.matcher);
-										}
-										
-										// Try test method
-										if (typeof m.test === 'function') {
-											try {
-												const result = m.test(fileCache);
-												return !!result;
-											} catch (e1) {
-												try {
-													const result = m.test(file);
-													return !!result;
-												} catch (e2) {
-													return false;
-												}
-											}
-										}
-										
-										// Try match method
-										if (typeof m.match === 'function') {
-											try {
-												const result = m.match(fileCache);
-												return !!result;
-											} catch (e1) {
-												try {
-													const result = m.match(file);
-													return !!result;
-												} catch (e2) {
-													return false;
-												}
-											}
-										}
-										
-										// Try calling as function
-										try {
-											const result = (m as any)(fileCache);
-											return !!result;
-										} catch (e1) {
-											try {
-												const result = (m as any)(file);
-												return !!result;
-											} catch (e2) {
-												return false;
-											}
-										}
-									}
-									
-									return false;
-								} catch (e) {
-									return false;
-								}
-							};
-							
-							for (const subMatcher of subMatchers) {
-								const subMatches = testSingleMatcher(subMatcher);
-								if (!subMatches) {
-									allMatch = false;
-									break;
-								}
-							}
-							matches = allMatch;
-						} else if (typeof (matcher as any).test === 'function') {
-							// Matcher might be an object with a test method
-							try {
-								matches = (matcher as any).test(fileCache);
-							} catch (e1) {
-								try {
-									matches = (matcher as any).test(file);
-								} catch (e2) {
-									// Skip
-								}
-							}
-						} else if (typeof (matcher as any).match === 'function') {
-							try {
-								matches = (matcher as any).match(fileCache);
-							} catch (e1) {
-								try {
-									matches = (matcher as any).match(file);
-								} catch (e2) {
-									// Skip
-								}
-							}
-						} else {
-							// Try calling it as a function anyway
-							try {
-								matches = (matcher as any)(fileCache);
-							} catch (e1) {
-								try {
-									matches = (matcher as any)(file);
-								} catch (e2) {
-									// Skip
-								}
-							}
+						if (allWordsInContent) {
+							matches = true;
 						}
+					} catch (e) {
+						// If we can't read the file, skip it
+						continue;
 					}
-					
-					if (matches) {
-						matchingFiles.push(file);
-					}
-				} catch (e) {
-					// Some matchers might throw for certain files - that's okay, just skip
-					continue;
 				}
 			}
 			
-			// If matcher didn't work, try DOM extraction first (most reliable)
-			// then fall back to manual search if DOM extraction fails
-			if (matchingFiles.length === 0) {
-				const domResults = this.getActiveSearchResultsFromDOM();
-				if (domResults.length > 0) {
-					return domResults;
-				}
-				const manualResults = this.manualSearch(queryString);
-				if (manualResults.length > 0) {
-					return manualResults;
-				}
-				return [];
+			if (matches) {
+				matchingFiles.push(file);
 			}
-			
-			return matchingFiles;
-		} catch (error) {
-			console.error('[Thoughtlands] Error executing search:', error);
-			// Fallback to DOM extraction if search fails
-			return this.getActiveSearchResultsFromDOM();
 		}
+		
+		console.log('[Thoughtlands] Found', matchingFiles.length, 'files matching search terms');
+		
+		// Apply plugin's own filters (included/excluded paths and tags)
+		const filteredFiles = this.regionService.filterNotesByIgnores(
+			matchingFiles,
+			this.app.metadataCache,
+			this.noteService
+		);
+		
+		console.log('[Thoughtlands] After applying plugin filters:', filteredFiles.length, 'files');
+		
+		return filteredFiles;
 	}
 	
-	private manualSearch(queryString: string): TFile[] {
+	private async manualSearch(queryString: string): Promise<TFile[]> {
 		// Parse the query string for path filters and text search
 		const pathMatch = queryString.match(/path:([^\s]+)/);
 		const pathFilter = pathMatch ? pathMatch[1].trim() : null;
@@ -1335,9 +1192,62 @@ export class CreateRegionCommands {
 				}
 			}
 			
-			// Note: We can't easily search file content synchronously here.
-			// If no match in metadata, we'll skip this file and rely on DOM extraction
-			// which should have the actual search results from Obsidian.
+			// For multi-word queries, check if ALL words appear somewhere (not necessarily together)
+			// This handles cases like "John Adams" where both words should be present
+			if (!matches && textQuery.includes(' ') && fileCache) {
+				const words = textQuery.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+				let allWordsFound = true;
+				const searchableText = (
+					file.path.toLowerCase() + ' ' +
+					file.basename.toLowerCase() + ' ' +
+					(fileCache?.frontmatter ? JSON.stringify(fileCache.frontmatter).toLowerCase() : '') + ' ' +
+					(fileCache?.tags ? fileCache.tags.map(t => t.tag.toLowerCase()).join(' ') : '') + ' ' +
+					(fileCache?.links ? fileCache.links.map(l => (l.original || l.displayText || '').toLowerCase()).join(' ') : '')
+				);
+				
+				for (const word of words) {
+					if (!searchableText.includes(word)) {
+						allWordsFound = false;
+						break;
+					}
+				}
+				
+				if (allWordsFound) {
+					matches = true;
+				}
+			}
+			
+			// Search file content - this is critical for finding all matches
+			if (!matches) {
+				try {
+					const content = await this.app.vault.read(file);
+					const contentLower = content.toLowerCase();
+					const queryLower = textQuery.toLowerCase();
+					
+					// For multi-word queries, check if all words are in content
+					if (textQuery.includes(' ')) {
+						const words = queryLower.split(/\s+/).filter(w => w.length > 0);
+						let allWordsInContent = true;
+						for (const word of words) {
+							if (!contentLower.includes(word)) {
+								allWordsInContent = false;
+								break;
+							}
+						}
+						if (allWordsInContent) {
+							matches = true;
+						}
+					} else {
+						// Single word - check if it's in content
+						if (contentLower.includes(queryLower)) {
+							matches = true;
+						}
+					}
+				} catch (e) {
+					// If we can't read the file, skip it
+					continue;
+				}
+			}
 			
 			if (matches) {
 				matchingFiles.push(file);

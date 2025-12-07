@@ -6,6 +6,7 @@ import { RegionInfoModal } from '../ui/regionInfoModal';
 import { CanvasService } from '../services/canvasService';
 import { CanvasSelectModal } from '../ui/canvasSelectModal';
 import { ThoughtlandsSettings } from '../settings/thoughtlandsSettings';
+import { EmbeddingProgress } from '../services/embeddingService';
 
 export const THOUGHTLANDS_VIEW_TYPE = 'thoughtlands-sidebar';
 
@@ -53,11 +54,12 @@ export class ThoughtlandsSidebarView extends ItemView {
 		// Ensure embeddings are loaded before rendering
 		if (this.settings.aiMode === 'local') {
 			const embeddingService = (this.plugin as any).embeddingService;
-			if (embeddingService) {
+				if (embeddingService) {
 				await embeddingService.getStorageService().loadEmbeddings();
 				// Subscribe to progress updates to re-render when process starts/stops
 				if (this.progressUnsubscribe) {
 					this.progressUnsubscribe();
+					this.progressUnsubscribe = undefined;
 				}
 				this.progressUnsubscribe = embeddingService.onProgress(() => {
 					this.render();
@@ -159,41 +161,91 @@ export class ThoughtlandsSidebarView extends ItemView {
 				}
 			}
 			
-			// Show the section if embeddings are not complete AND not currently processing
-			if (!embeddingsComplete && !isProcessing) {
+			// Show the section if embeddings are not complete
+			if (!embeddingsComplete) {
 				const embeddingSection = containerEl.createDiv({ 
 					attr: { style: 'padding: 10px; border-bottom: 1px solid var(--background-modifier-border); background-color: var(--background-modifier-form-field-highlighted);' } 
 				});
-				embeddingSection.createEl('h3', { 
-					text: 'Embeddings Required', 
-					attr: { style: 'margin-top: 0; margin-bottom: 10px; font-size: 1em; color: var(--text-warning);' } 
-				});
-				embeddingSection.createEl('p', { 
-					text: 'Because you are using a local model, embeddings must be generated before using AI-assisted region creation. This process analyzes all notes in your vault for semantic similarity.',
-					attr: { style: 'margin: 0 0 10px 0; font-size: 0.9em; color: var(--text-muted);' }
-				});
 				
-				const generateButton = embeddingSection.createEl('button', { 
-					text: 'Generate Initial Embeddings',
-					attr: { 
-						style: 'width: 100%; padding: 10px; text-align: center; font-weight: bold;',
-						title: 'Start the embedding generation process for all notes in your vault'
+				if (isProcessing) {
+					// Show progress when processing
+					embeddingSection.createEl('h3', { 
+						text: 'Generating Embeddings', 
+						attr: { style: 'margin-top: 0; margin-bottom: 10px; font-size: 1em; color: var(--text-accent);' } 
+					});
+					
+					const progressText = embeddingSection.createEl('p', { 
+						text: 'Loading...',
+						attr: { style: 'margin: 0; font-size: 0.9em; color: var(--text-normal);' }
+					});
+					
+					// Subscribe to progress updates (unsubscribe old one first)
+					if (this.progressUnsubscribe) {
+						this.progressUnsubscribe();
+						this.progressUnsubscribe = undefined;
 					}
-				});
-				
-				generateButton.addEventListener('click', async () => {
-					// Access the plugin's generateInitialEmbeddings method
-					const plugin = this.plugin as any;
-					if (plugin && typeof plugin.generateInitialEmbeddings === 'function') {
-						await plugin.generateInitialEmbeddings();
-						// Re-render to update the UI
-						this.render();
-					} else {
-						// Fallback: use command
-						await (this.app as any).commands.executeCommandById('thoughtlands:generate-initial-embeddings');
-						this.render();
+					this.progressUnsubscribe = embeddingService.onProgress((progress: EmbeddingProgress) => {
+						const progressMessage = progress.currentFile
+							? `Embedding notes: ${progress.completed} / ${progress.total} (${progress.percentage}%) - ${progress.currentFile}`
+							: `Embedding notes: ${progress.completed} / ${progress.total} (${progress.percentage}%)`;
+						progressText.textContent = progressMessage;
+						// Re-render when complete to show button again
+						if (progress.completed >= progress.total) {
+							setTimeout(() => this.render(), 500);
+						}
+					});
+					
+					// Show current progress if available
+					const currentProgress = embeddingService.getCurrentProgress();
+					if (currentProgress) {
+						const progressMessage = currentProgress.currentFile
+							? `Embedding notes: ${currentProgress.completed} / ${currentProgress.total} (${currentProgress.percentage}%) - ${currentProgress.currentFile}`
+							: `Embedding notes: ${currentProgress.completed} / ${currentProgress.total} (${currentProgress.percentage}%)`;
+						progressText.textContent = progressMessage;
 					}
-				});
+				} else {
+					// Show button when not processing
+					embeddingSection.createEl('h3', { 
+						text: 'Embeddings Required', 
+						attr: { style: 'margin-top: 0; margin-bottom: 10px; font-size: 1em; color: var(--text-warning);' } 
+					});
+					embeddingSection.createEl('p', { 
+						text: 'Because you are using a local model, embeddings must be generated before using AI-assisted region creation. This process analyzes all notes in your vault for semantic similarity.',
+						attr: { style: 'margin: 0 0 10px 0; font-size: 0.9em; color: var(--text-muted);' }
+					});
+					
+					const generateButton = embeddingSection.createEl('button', { 
+						text: 'Generate Initial Embeddings',
+						attr: { 
+							style: 'width: 100%; padding: 10px; text-align: center; font-weight: bold;',
+							title: 'Start the embedding generation process for all notes in your vault'
+						}
+					});
+					
+					generateButton.addEventListener('click', async () => {
+						// Access the plugin's generateInitialEmbeddings method
+						const plugin = this.plugin as any;
+						if (plugin && typeof plugin.generateInitialEmbeddings === 'function') {
+							try {
+								await plugin.generateInitialEmbeddings();
+							} catch (error) {
+								console.error('[Thoughtlands] Error generating embeddings:', error);
+								new Notice(`Error generating embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`);
+							}
+							// Re-render to update the UI
+							this.render();
+						} else {
+							// Fallback: use command
+							try {
+								await (this.app as any).commands.executeCommandById('thoughtlands:generate-initial-embeddings');
+							} catch (error) {
+								console.error('[Thoughtlands] Error executing command:', error);
+								new Notice('Failed to generate embeddings. Please try the command from the command palette.');
+							}
+							this.render();
+						}
+					});
+				}
 			}
 		}
 
@@ -224,20 +276,49 @@ export class ThoughtlandsSidebarView extends ItemView {
 			this.render();
 		});
 
-		// Button 2: Create Region from Search Results + AI Analysis (only if local model is active)
+		// Button 2: Create Region from Search Results + AI Analysis (only if local model is active and embeddings are complete)
 		if (this.settings.aiMode === 'local') {
-			const searchAIAnalysisButton = buttonsContainer.createEl('button', { 
-				text: 'From Search Results + AI Analysis',
-				attr: { 
-					style: 'width: 100%; padding: 8px; text-align: left;',
-					title: 'Use AI to examine search results and see if there are other related notes.'
+			// Check if embeddings are complete and not processing
+			const embeddingService2 = (this.plugin as any).embeddingService;
+			let embeddingsComplete2 = false;
+			let isProcessing2 = false;
+			if (embeddingService2) {
+				// Check if data is already loaded
+				const storageService2 = embeddingService2.getStorageService();
+				const currentData2 = storageService2.getEmbeddingsData();
+				if (currentData2) {
+					// Data is loaded, check synchronously
+					isProcessing2 = embeddingService2.isEmbeddingProcessInProgress();
+					embeddingsComplete2 = embeddingService2.isEmbeddingProcessComplete();
+				} else {
+					// Data not loaded yet, try to load it (async, will update on next render)
+					storageService2.loadEmbeddings().then(() => {
+						const isComplete = embeddingService2.isEmbeddingProcessComplete();
+						const stillProcessing = embeddingService2.isEmbeddingProcessInProgress();
+						if (isComplete && !stillProcessing) {
+							this.render(); // Re-render to show button
+						}
+					}).catch(() => {
+						// Error loading, don't show button
+					});
 				}
-			});
-			searchAIAnalysisButton.addEventListener('click', async () => {
-				await this.createRegionCommands.createRegionFromSearchWithAIAnalysis();
-				await this.onRegionUpdate();
-				this.render();
-			});
+			}
+			
+			// Only show button if embeddings are complete AND not processing
+			if (embeddingsComplete2 && !isProcessing2) {
+				const searchAIAnalysisButton = buttonsContainer.createEl('button', { 
+					text: 'From Search Results + AI Analysis',
+					attr: { 
+						style: 'width: 100%; padding: 8px; text-align: left;',
+						title: 'Use AI to examine search results and see if there are other related notes.'
+					}
+				});
+				searchAIAnalysisButton.addEventListener('click', async () => {
+					await this.createRegionCommands.createRegionFromSearchWithAIAnalysis();
+					await this.onRegionUpdate();
+					this.render();
+				});
+			}
 		}
 
 		// Button 3: Create Region from AI Concept Search (show if OpenAI key or local mode enabled)
@@ -251,26 +332,31 @@ export class ThoughtlandsSidebarView extends ItemView {
 		if (this.settings.aiMode === 'local') {
 			const embeddingService = (this.plugin as any).embeddingService;
 			if (embeddingService) {
-				// Check if processing is in progress
-				isProcessing = embeddingService.isEmbeddingProcessInProgress();
-				
-				// Ensure data is loaded, then check
-				embeddingService.getStorageService().loadEmbeddings().then(() => {
-					const complete = embeddingService.isEmbeddingProcessComplete();
-					const processing = embeddingService.isEmbeddingProcessInProgress();
-					embeddingsComplete = complete;
-					// Re-render if status changed
-					if (!embeddingsComplete || processing) {
-						this.render();
-					}
-				}).catch(() => {
-					embeddingsComplete = false;
-				});
+				// Check if data is already loaded
+				const storageService = embeddingService.getStorageService();
+				const currentData = storageService.getEmbeddingsData();
+				if (currentData) {
+					// Data is loaded, check synchronously
+					isProcessing = embeddingService.isEmbeddingProcessInProgress();
+					embeddingsComplete = embeddingService.isEmbeddingProcessComplete();
+				} else {
+					// Data not loaded yet, try to load it (async, will update on next render)
+					storageService.loadEmbeddings().then(() => {
+						const isComplete = embeddingService.isEmbeddingProcessComplete();
+						const stillProcessing = embeddingService.isEmbeddingProcessInProgress();
+						if (isComplete && !stillProcessing) {
+							this.render(); // Re-render to show button
+						}
+					}).catch(() => {
+						// Error loading, don't show button
+					});
+					embeddingsComplete = false; // Don't show button until data is loaded
+				}
 			}
 		}
 		
-		// Only show AI button if embeddings are complete AND not processing
-		if (showAIButton && embeddingsComplete && !isProcessing) {
+		// Only show AI button if embeddings are complete AND not processing (or if OpenAI mode)
+		if (showAIButton && (this.settings.aiMode === 'openai' || (embeddingsComplete && !isProcessing))) {
 			let tooltipText = `Use ${this.settings.aiMode === 'local' ? 'local model' : 'AI'} to gather notes that have tags relevant to certain concepts that you provide.`;
 			if (this.settings.aiMode === 'local') {
 				tooltipText += ' Refine the selection with semantic similarity analysis.';
@@ -291,32 +377,36 @@ export class ThoughtlandsSidebarView extends ItemView {
 				});
 		}
 
-		// Button 4: Create Region from Semantic Similarity Analysis (only if local mode enabled)
+		// Button 4: Create Region from Semantic Similarity Analysis (only if local mode enabled and embeddings are complete)
 		if (this.settings.aiMode === 'local') {
 			// Check if embeddings are complete and not processing
-			const embeddingService = (this.plugin as any).embeddingService;
-			let embeddingsComplete = true;
-			let isProcessing = false;
-			if (embeddingService) {
-				// Check if processing is in progress
-				isProcessing = embeddingService.isEmbeddingProcessInProgress();
-				
-				// Ensure data is loaded, then check
-				embeddingService.getStorageService().loadEmbeddings().then(() => {
-					const complete = embeddingService.isEmbeddingProcessComplete();
-					const processing = embeddingService.isEmbeddingProcessInProgress();
-					embeddingsComplete = complete;
-					// Re-render if status changed
-					if (!embeddingsComplete || processing) {
-						this.render();
-					}
-				}).catch(() => {
-					embeddingsComplete = false;
-				});
+			const embeddingService3 = (this.plugin as any).embeddingService;
+			let embeddingsComplete3 = false;
+			let isProcessing3 = false;
+			if (embeddingService3) {
+				// Check if data is already loaded
+				const storageService3 = embeddingService3.getStorageService();
+				const currentData3 = storageService3.getEmbeddingsData();
+				if (currentData3) {
+					// Data is loaded, check synchronously
+					isProcessing3 = embeddingService3.isEmbeddingProcessInProgress();
+					embeddingsComplete3 = embeddingService3.isEmbeddingProcessComplete();
+				} else {
+					// Data not loaded yet, try to load it (async, will update on next render)
+					storageService3.loadEmbeddings().then(() => {
+						const isComplete = embeddingService3.isEmbeddingProcessComplete();
+						const stillProcessing = embeddingService3.isEmbeddingProcessInProgress();
+						if (isComplete && !stillProcessing) {
+							this.render(); // Re-render to show button
+						}
+					}).catch(() => {
+						// Error loading, don't show button
+					});
+				}
 			}
 			
 			// Only show semantic similarity button if embeddings are complete AND not processing
-			if (embeddingsComplete && !isProcessing) {
+			if (embeddingsComplete3 && !isProcessing3) {
 				const semanticButton = buttonsContainer.createEl('button', { 
 					text: 'From Semantic Similarity Analysis',
 					attr: { 
