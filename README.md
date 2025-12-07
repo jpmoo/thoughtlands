@@ -122,8 +122,10 @@ Run `npm run build` to build the plugin for production.
 3. Enter descriptive text about what you're looking for
 4. The plugin will:
    - Generate an embedding for your concept text
-   - Find all notes semantically similar to your concept
+   - Find up to 100 notes semantically similar to your concept (based on similarity threshold)
    - Create a region with the matching notes
+   
+   **Note:** Returns up to 100 notes. To be more selective, increase the embedding similarity threshold in settings (default: 0.45).
 
 ### Managing Regions
 
