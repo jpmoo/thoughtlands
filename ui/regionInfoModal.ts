@@ -1,12 +1,17 @@
-import { App, Modal, TFile } from 'obsidian';
+import { App, Modal, TFile, Notice } from 'obsidian';
 import { Region, getModeDisplayName } from '../models/region';
+import { RegionService } from '../services/regionService';
 
 export class RegionInfoModal extends Modal {
 	private region: Region;
+	private regionService?: RegionService;
+	private onUpdate?: () => void;
 
-	constructor(app: App, region: Region) {
+	constructor(app: App, region: Region, regionService?: RegionService, onUpdate?: () => void) {
 		super(app);
 		this.region = region;
+		this.regionService = regionService;
+		this.onUpdate = onUpdate;
 	}
 
 	onOpen() {
@@ -98,31 +103,93 @@ export class RegionInfoModal extends Modal {
 			canvasHeader.addEventListener('click', toggleCanvasList);
 			
 			canvases.forEach((canvas, index) => {
-				const canvasItem = canvasList.createDiv({ attr: { style: 'margin: 5px 0; padding: 5px; background: var(--background-primary); border-radius: 3px;' } });
+				const canvasItem = canvasList.createDiv({ attr: { style: 'margin: 5px 0; padding: 5px; background: var(--background-primary); border-radius: 3px; display: flex; align-items: center; justify-content: space-between;' } });
+				
+				const leftSection = canvasItem.createDiv({ attr: { style: 'flex: 1;' } });
+				
+				// Check if canvas file exists
+				const canvasFile = this.app.vault.getAbstractFileByPath(canvas.path);
+				const fileExists = canvasFile instanceof TFile;
 				
 				// Canvas path link
-				const canvasLink = canvasItem.createEl('a', { 
+				const canvasLink = leftSection.createEl('a', { 
 					text: canvas.path,
 					attr: { 
-						style: 'color: var(--text-accent); cursor: pointer; text-decoration: underline; font-weight: 500;',
+						style: fileExists 
+							? 'color: var(--text-accent); cursor: pointer; text-decoration: underline; font-weight: 500;'
+							: 'color: var(--text-muted); cursor: not-allowed; text-decoration: line-through; font-weight: 500; opacity: 0.6;',
 						href: '#'
 					}
 				});
-				canvasLink.addEventListener('click', (e) => {
-					e.preventDefault();
-					this.app.workspace.openLinkText(canvas.path, '', true);
-					this.close();
-				});
+				
+				if (fileExists) {
+					canvasLink.addEventListener('click', (e) => {
+						e.preventDefault();
+						this.app.workspace.openLinkText(canvas.path, '', true);
+						this.close();
+					});
+				} else {
+					canvasLink.addEventListener('click', (e) => {
+						e.preventDefault();
+						// Do nothing - file doesn't exist
+					});
+				}
 				
 				// Status and timestamp
 				const statusText = canvas.isNew ? 'new' : 'added';
 				const dateTime = new Date(canvas.addedAt).toLocaleString();
-				canvasItem.createEl('div', { 
-					text: `${statusText} • ${dateTime}`,
+				const statusDiv = leftSection.createEl('div', { 
+					text: `${statusText} • ${dateTime}${!fileExists ? ' • (file missing)' : ''}`,
 					attr: { 
-						style: 'font-size: 0.85em; color: var(--text-muted); margin-top: 3px;'
+						style: `font-size: 0.85em; color: var(--text-muted); margin-top: 3px; ${!fileExists ? 'opacity: 0.6;' : ''}`
 					}
 				});
+				
+				// Add remove button if file doesn't exist
+				if (!fileExists && this.regionService) {
+					const removeButton = canvasItem.createEl('button', {
+						text: 'Remove',
+						attr: {
+							style: 'padding: 4px 8px; font-size: 0.85em; margin-left: 10px;'
+						}
+					});
+					
+					removeButton.addEventListener('click', async (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						
+						if (!this.regionService) return;
+						
+						if (confirm(`Remove "${canvas.path}" from this region's canvas list?`)) {
+							// Remove canvas from region
+							const updatedCanvases = (this.region.canvases || []).filter(c => c.path !== canvas.path);
+							
+							// Also clear canvasPath if it matches
+							const updatedCanvasPath = this.region.canvasPath === canvas.path ? undefined : this.region.canvasPath;
+							
+							this.regionService.updateRegion(this.region.id, {
+								canvases: updatedCanvases,
+								canvasPath: updatedCanvasPath
+							});
+							
+							// Update the region reference
+							this.region.canvases = updatedCanvases;
+							if (updatedCanvasPath === undefined) {
+								delete this.region.canvasPath;
+							}
+							
+							// Trigger update callback if provided
+							if (this.onUpdate) {
+								this.onUpdate();
+							}
+							
+							// Re-render the modal
+							this.onOpen();
+							
+							new Notice(`Removed "${canvas.path}" from region`);
+						}
+					});
+				}
 			});
 		}
 

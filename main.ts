@@ -48,7 +48,7 @@ export default class ThoughtlandsPlugin extends Plugin {
 		this.localAIService = new LocalAIService(this.app, this.settings);
 		// Pass plugin instance to EmbeddingService so it can use loadData/saveData
 		this.embeddingService = new EmbeddingService(this.app, this.settings, this);
-		this.canvasService = new CanvasService(this.app);
+		this.canvasService = new CanvasService(this.app, this.embeddingService);
 		this.jsonExportService = new JSONExportService(this.app, this.regionService);
 		this.createRegionCommands = new CreateRegionCommands(
 			this.app,

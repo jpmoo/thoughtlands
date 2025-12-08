@@ -5,6 +5,7 @@ import { CreateRegionCommands } from '../commands/createRegionCommands';
 import { RegionInfoModal } from '../ui/regionInfoModal';
 import { CanvasService } from '../services/canvasService';
 import { CanvasSelectModal } from '../ui/canvasSelectModal';
+import { CardInputModal } from '../ui/cardInputModal';
 import { ThoughtlandsSettings } from '../settings/thoughtlandsSettings';
 import { EmbeddingProgress } from '../services/embeddingService';
 
@@ -204,7 +205,7 @@ export class ThoughtlandsSidebarView extends ItemView {
 						progressText.textContent = progressMessage;
 					}
 				} else {
-					// Show button when not processing
+					// Show button when not processing - will be added below options section
 					embeddingSection.createEl('h3', { 
 						text: 'Embeddings Required', 
 						attr: { style: 'margin-top: 0; margin-bottom: 10px; font-size: 1em; color: var(--text-warning);' } 
@@ -212,38 +213,6 @@ export class ThoughtlandsSidebarView extends ItemView {
 					embeddingSection.createEl('p', { 
 						text: 'Because you are using a local model, embeddings must be generated before using AI-assisted region creation. This process analyzes all notes in your vault for semantic similarity.',
 						attr: { style: 'margin: 0 0 10px 0; font-size: 0.9em; color: var(--text-muted);' }
-					});
-					
-					const generateButton = embeddingSection.createEl('button', { 
-						text: 'Generate Initial Embeddings',
-						attr: { 
-							style: 'width: 100%; padding: 10px; text-align: center; font-weight: bold;',
-							title: 'Start the embedding generation process for all notes in your vault'
-						}
-					});
-					
-					generateButton.addEventListener('click', async () => {
-						// Access the plugin's generateInitialEmbeddings method
-						const plugin = this.plugin as any;
-						if (plugin && typeof plugin.generateInitialEmbeddings === 'function') {
-							try {
-								await plugin.generateInitialEmbeddings();
-							} catch (error) {
-								console.error('[Thoughtlands] Error generating embeddings:', error);
-								new Notice(`Error generating embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`);
-							}
-							// Re-render to update the UI
-							this.render();
-						} else {
-							// Fallback: use command
-							try {
-								await (this.app as any).commands.executeCommandById('thoughtlands:generate-initial-embeddings');
-							} catch (error) {
-								console.error('[Thoughtlands] Error executing command:', error);
-								new Notice('Failed to generate embeddings. Please try the command from the command palette.');
-							}
-							this.render();
-						}
 					});
 				}
 			}
@@ -423,6 +392,50 @@ export class ThoughtlandsSidebarView extends ItemView {
 			}
 		}
 
+		// Add generate embeddings button below the options (if needed)
+		if (this.settings.aiMode === 'local') {
+			const embeddingService = (this.plugin as any).embeddingService;
+			if (embeddingService) {
+				const isComplete = embeddingService.isEmbeddingProcessComplete();
+				const isProcessing = embeddingService.isEmbeddingProcessInProgress();
+				
+				if (!isComplete && !isProcessing) {
+					// Show generate button below the options
+					const generateButton = buttonsContainer.createEl('button', { 
+						text: 'Generate Initial Embeddings',
+						attr: { 
+							style: 'width: 100%; padding: 10px; text-align: center; font-weight: bold; margin-top: 10px;',
+							title: 'Start the embedding generation process for all notes in your vault'
+						}
+					});
+					
+					generateButton.addEventListener('click', async () => {
+						// Access the plugin's generateInitialEmbeddings method
+						const plugin = this.plugin as any;
+						if (plugin && typeof plugin.generateInitialEmbeddings === 'function') {
+							try {
+								await plugin.generateInitialEmbeddings();
+							} catch (error) {
+								console.error('[Thoughtlands] Error generating embeddings:', error);
+								new Notice(`Error generating embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`);
+							}
+							// Re-render to update the UI
+							this.render();
+						} else {
+							// Fallback: use command
+							try {
+								await (this.app as any).commands.executeCommandById('thoughtlands:generate-initial-embeddings');
+							} catch (error) {
+								console.error('[Thoughtlands] Error executing command:', error);
+								new Notice('Failed to generate embeddings. Please try the command from the command palette.');
+							}
+							this.render();
+						}
+					});
+				}
+			}
+		}
+
 		// Check if region creation is in progress
 		const plugin = this.plugin as any;
 		const creationStatus = plugin.getRegionCreationStatus ? plugin.getRegionCreationStatus() : { isCreating: false };
@@ -529,14 +542,25 @@ export class ThoughtlandsSidebarView extends ItemView {
 			deleteButton.addEventListener('click', () => this.deleteRegion(region));
 
 			const hasCanvases = (region.canvases && region.canvases.length > 0) || region.canvasPath;
-			const canvasButtonText = hasCanvases ? 'Add to Another Canvas' : 'Add to Canvas';
+			const canvasButtonText = hasCanvases ? 'Add Canvas' : 'Add to Canvas';
 			const canvasButton = actions.createEl('button', { text: canvasButtonText, attr: { style: 'flex: 1; min-width: 80px;' } });
 			canvasButton.addEventListener('click', () => this.addToCanvas(region));
 		});
 	}
 
 	private async renameRegion(region: Region) {
-		const newName = prompt('Enter new name:', region.name);
+		const { SimplePromptModal } = await import('../ui/simplePromptModal');
+		const newName = await new Promise<string | null>((resolve) => {
+			const modal = new SimplePromptModal(
+				this.app,
+				'Rename Region',
+				'Enter new name:',
+				(result: string) => resolve(result),
+				region.name
+			);
+			modal.open();
+		});
+		
 		if (newName && newName.trim() !== '') {
 			this.regionService.updateRegion(region.id, { name: newName.trim() });
 			this.onRegionUpdate();
@@ -554,13 +578,65 @@ export class ThoughtlandsSidebarView extends ItemView {
 
 	private async addToCanvas(region: Region) {
 		let isNewCanvas = false;
+		
+		// Check if semantic similarity arrangement is available
+		// Only available if local AI is enabled and embeddings are complete
+		let canArrangeBySimilarity = false;
+		if (this.settings.aiMode === 'local') {
+			const embeddingService = (this.plugin as any).embeddingService;
+			if (embeddingService) {
+				const isComplete = embeddingService.isEmbeddingProcessComplete();
+				const isProcessing = embeddingService.isEmbeddingProcessInProgress();
+				canArrangeBySimilarity = isComplete && !isProcessing;
+			}
+		}
+		
 		const modal = new CanvasSelectModal(
 			this.app,
 			this.canvasService,
-			async (canvasFile: any, wasNew: boolean, drawConnections: boolean) => {
+			async (canvasFile: any, wasNew: boolean, drawConnections: boolean, createCard: boolean, arrangeBySimilarity: boolean) => {
 				if (canvasFile) {
 					isNewCanvas = wasNew;
-					const result = await this.canvasService.addRegionToCanvas(canvasFile, region, isNewCanvas, drawConnections);
+					
+					// If card creation is requested, prompt for card text and color
+					let card: { text: string; color: string } | undefined = undefined;
+					if (createCard) {
+						// Extract default text from region
+						let defaultText = '';
+						if (region.source.query) {
+							defaultText = region.source.query;
+						} else if (region.source.concepts && region.source.concepts.length > 0) {
+							defaultText = region.source.concepts.join(', ');
+						} else if (region.source.processingInfo?.conceptText) {
+							defaultText = region.source.processingInfo.conceptText;
+						}
+						
+						// Get default colors from settings, with Obsidian canvas palette colors as fallback
+						// Obsidian canvas supports palette colors '1'-'6' and hex colors '#RRGGBB'
+						const defaultColors = this.settings.defaultColors && this.settings.defaultColors.length > 0
+							? this.settings.defaultColors
+							: ['#E67E22', '#3498DB', '#2ECC71', '#9B59B6', '#E74C3C', '#F39C12', '#1ABC9C', '#95A5A6'];
+						
+						// Prompt for card text and color
+						const cardInput = await new Promise<{ text: string; color: string } | null>((resolve) => {
+							const cardModal = new CardInputModal(
+								this.app,
+								defaultText,
+								defaultColors,
+								(result) => resolve(result)
+							);
+							cardModal.open();
+						});
+						
+						if (cardInput) {
+							card = cardInput;
+						} else {
+							// User cancelled card creation, proceed without card
+							return;
+						}
+					}
+					
+					const result = await this.canvasService.addRegionToCanvas(canvasFile, region, isNewCanvas, drawConnections, card, arrangeBySimilarity);
 					if (result) {
 						// Update region with canvas entry
 						const existingCanvases = region.canvases || [];
@@ -612,13 +688,17 @@ export class ThoughtlandsSidebarView extends ItemView {
 					}
 				}
 			},
-			region.name // Suggest region name for new canvas
+			region.name, // Suggest region name for new canvas
+			canArrangeBySimilarity // Pass availability flag
 		);
 		modal.open();
 	}
 
 	private showRegionInfo(region: Region) {
-		const modal = new RegionInfoModal(this.app, region);
+		const modal = new RegionInfoModal(this.app, region, this.regionService, () => {
+			this.onRegionUpdate();
+			this.render();
+		});
 		modal.open();
 	}
 

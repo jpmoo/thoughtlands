@@ -67,19 +67,6 @@ export class RegionService {
 	}
 
 	filterNotesByIgnores(files: TFile[], metadataCache?: any, noteService?: any): TFile[] {
-		const isBatch = files.length > 1;
-		
-		// Log filter settings for debugging (only for batches, not individual files)
-		if (isBatch) {
-			console.log('[Thoughtlands:RegionService] Filtering files with settings:', {
-				includedPaths: this.settings.includedPaths,
-				ignoredPaths: this.settings.ignoredPaths,
-				includedTags: this.settings.includedTags,
-				ignoredTags: this.settings.ignoredTags,
-				totalFiles: files.length
-			});
-		}
-		
 		const filtered = files.filter(file => {
 			const filePath = file.path.toLowerCase();
 			
@@ -89,16 +76,9 @@ export class RegionService {
 					const includedLower = included.toLowerCase();
 					const startsWith = filePath.startsWith(includedLower);
 					const includes = filePath.includes(includedLower);
-					if (startsWith || includes && isBatch) {
-						console.log(`[Thoughtlands:RegionService] File ${file.path} matches included path: ${included}`);
-					}
 					return startsWith || includes;
 				});
 				if (!isIncluded) {
-					// Only log for batches, not individual file checks
-					if (isBatch) {
-					console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (not in included paths: ${this.settings.includedPaths.join(', ')})`);
-					}
 					return false;
 				}
 			}
@@ -109,10 +89,6 @@ export class RegionService {
 				return filePath.includes(ignoredLower);
 			});
 			if (isIgnored) {
-				// Only log for batches, not individual file checks
-				if (isBatch) {
-				console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (in ignored paths)`);
-				}
 				return false;
 			}
 			
@@ -129,9 +105,6 @@ export class RegionService {
 						return fileTagsLower.includes(ignoredLower);
 					});
 					if (hasIgnoredTag) {
-						if (isBatch) {
-							console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (has ignored tag)`);
-						}
 						return false;
 					}
 					
@@ -143,9 +116,6 @@ export class RegionService {
 							)
 						);
 						if (!hasIncludedTag) {
-							if (isBatch) {
-								console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (no included tags). File tags: [${fileTags.join(', ')}], Required tags: [${this.settings.includedTags.join(', ')}]`);
-							}
 							return false;
 						}
 					}
@@ -153,9 +123,6 @@ export class RegionService {
 					// If no file cache, check if we should exclude it
 					// For included tags, if no cache, we can't verify tags, so exclude it
 					if (this.settings.includedTags.length > 0) {
-						if (isBatch) {
-							console.log(`[Thoughtlands:RegionService] Filtering out ${file.path} (no file cache, cannot verify included tags)`);
-						}
 						return false;
 					}
 				}
@@ -163,19 +130,6 @@ export class RegionService {
 			
 			return true;
 		});
-		
-		// Log summary only for batches
-		if (isBatch) {
-			console.log('[Thoughtlands:RegionService] Filtering result:', {
-			original: files.length,
-			filtered: filtered.length,
-			excluded: files.length - filtered.length,
-			includedPaths: this.settings.includedPaths,
-				ignoredPaths: this.settings.ignoredPaths,
-				includedTags: this.settings.includedTags,
-				ignoredTags: this.settings.ignoredTags
-		});
-		}
 		
 		return filtered;
 	}
@@ -186,15 +140,7 @@ export class RegionService {
 			const isIgnored = this.settings.ignoredTags.some(ignored => 
 				ignored.toLowerCase() === tagName
 			);
-			if (isIgnored) {
-				console.log('[Thoughtlands:RegionService] Filtering out ignored tag:', tag);
-			}
 			return !isIgnored;
-		});
-		console.log('[Thoughtlands:RegionService] Tag filtering:', {
-			original: tags.length,
-			filtered: filtered.length,
-			ignoredTags: this.settings.ignoredTags
 		});
 		return filtered;
 	}
