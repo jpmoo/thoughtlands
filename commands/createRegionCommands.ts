@@ -45,23 +45,160 @@ export class CreateRegionCommands {
 	}
 
 	async createRegionFromSearch(): Promise<void> {
-		// Prompt for search terms
-		const searchTerms = await new Promise<string | null>((resolve) => {
-			const modal = new SimplePromptModal(
-				this.app,
-				'Enter Search Terms',
-				'Enter search terms to find matching notes (e.g., "John Adams" or "mentorship")',
-				(result: string) => {
-					resolve(result.trim() || null);
-				},
-				''
-			);
+		// Prompt for search terms and color
+		const searchResult = await new Promise<{ searchTerms: string; color: string } | null>((resolve) => {
+			class SearchTermsColorModal extends Modal {
+				private searchInput: HTMLInputElement;
+				private selectedColor: string;
+				private defaultColors: string[];
+
+				constructor(app: App, defaultColors: string[]) {
+					super(app);
+					this.defaultColors = defaultColors;
+					this.selectedColor = defaultColors[0] || '#E67E22';
+				}
+
+				onOpen() {
+					const { contentEl } = this;
+					contentEl.empty();
+
+					contentEl.createEl('h2', { text: 'Enter Search Terms' });
+
+					// Search terms input
+					const searchLabel = contentEl.createEl('label', { 
+						text: 'Enter search terms to find matching notes (e.g., "John Adams" or "mentorship"):',
+						attr: { style: 'display: block; margin: 10px 0 5px 0;' }
+					});
+
+					this.searchInput = contentEl.createEl('input', {
+						type: 'text',
+						placeholder: 'Search terms...',
+						attr: { 
+							style: 'width: 100%; margin: 5px 0 15px 0; padding: 8px;'
+						},
+					});
+
+					this.searchInput.focus();
+
+					// Color selection
+					const colorSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
+					colorSection.createEl('label', { 
+						text: 'Region Color:', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' } 
+					});
+
+					// Color preview
+					const colorPreview = colorSection.createDiv({
+						attr: {
+							style: `width: 100%; height: 30px; background-color: ${this.selectedColor}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`,
+							title: 'Click to change color'
+						}
+					});
+
+					// Obsidian canvas default palette colors
+					const obsidianCanvasColors = [
+						'#E67E22', '#3498DB', '#2ECC71', '#9B59B6', '#E74C3C', '#F39C12',
+					];
+					const allColors = [...obsidianCanvasColors, ...this.defaultColors.filter(c => !obsidianCanvasColors.includes(c))];
+
+					// Color buttons
+					const colorGrid = colorSection.createDiv({ 
+						attr: { style: 'display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;' } 
+					});
+					
+					allColors.forEach(color => {
+						const colorButton = colorGrid.createEl('button', {
+							text: '',
+							attr: {
+								style: `width: 30px; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer;`,
+								title: color
+							},
+						});
+						colorButton.addEventListener('click', () => {
+							this.selectedColor = color;
+							colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+						});
+					});
+
+					// Custom color input
+					const customColorContainer = colorSection.createDiv({ attr: { style: 'margin-top: 10px;' } });
+					customColorContainer.createEl('label', { 
+						text: 'Custom color (hex):', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-size: 0.9em;' } 
+					});
+					
+					const colorInput = customColorContainer.createEl('input', {
+						type: 'text',
+						placeholder: '#E67E22',
+						value: this.selectedColor,
+						attr: { style: 'width: 100px; padding: 5px;' },
+					});
+
+					colorInput.addEventListener('input', (e) => {
+						const value = (e.target as HTMLInputElement).value;
+						if (/^#[0-9A-Fa-f]{6}$/.test(value)) {
+							this.selectedColor = value;
+							colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${value}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+						}
+					});
+
+					// Buttons
+					const buttonContainer = contentEl.createDiv({ attr: { style: 'text-align: right; margin-top: 20px;' } });
+					
+					const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
+					cancelButton.addEventListener('click', () => {
+						this.close();
+						resolve(null);
+					});
+
+					const submitButton = buttonContainer.createEl('button', { text: 'OK', attr: { style: 'margin-left: 10px;' } });
+					submitButton.addEventListener('click', () => {
+						const text = this.searchInput.value.trim();
+						if (text) {
+							resolve({ searchTerms: text, color: this.selectedColor });
+						} else {
+							resolve(null);
+						}
+						this.close();
+					});
+
+					this.searchInput.addEventListener('keydown', (e) => {
+						if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+							const text = this.searchInput.value.trim();
+							if (text) {
+								resolve({ searchTerms: text, color: this.selectedColor });
+							} else {
+								resolve(null);
+							}
+							this.close();
+						}
+						if (e.key === 'Escape') {
+							this.close();
+							resolve(null);
+						}
+					});
+				}
+
+				onClose() {
+					const { contentEl } = this;
+					contentEl.empty();
+				}
+			}
+
+			const defaultColors = this.settings.defaultColors.length > 0 
+				? this.settings.defaultColors 
+				: ['#E67E22', '#3498DB', '#9B59B6', '#1ABC9C', '#E74C3C', '#F39C12', '#34495E', '#16A085'];
+			
+			const modal = new SearchTermsColorModal(this.app, defaultColors);
 			modal.open();
 		});
 
-		if (!searchTerms || searchTerms.trim() === '') {
+		if (!searchResult || !searchResult.searchTerms || searchResult.searchTerms.trim() === '') {
 			return;
 		}
+
+		const searchTerms = searchResult.searchTerms;
+		const color = searchResult.color;
 
 		// Search for files matching the terms
 		const searchResults = await this.searchFiles(searchTerms);
@@ -102,12 +239,8 @@ export class CreateRegionCommands {
 			console.warn('[Thoughtlands] Removed files:', removedFiles.map(f => f.path));
 		}
 
-		// Prompt for name and color
-		const name = await this.promptForName();
-		if (!name) return;
-
-		const color = await this.promptForColor();
-		if (!color) return;
+		// Use search terms as the region name
+		const name = searchTerms;
 
 		// Create region
 		const notePaths = filteredResults.map(file => file.path);
@@ -145,23 +278,209 @@ export class CreateRegionCommands {
 			return;
 		}
 
-		// Prompt for search terms
-		const searchTerms = await new Promise<string | null>((resolve) => {
-			const modal = new SimplePromptModal(
-				this.app,
-				'Enter Search Terms',
-				'Enter search terms to find matching notes (e.g., "John Adams" or "mentorship")',
-				(result: string) => {
-					resolve(result.trim() || null);
-				},
-				''
-			);
+		// Prompt for search terms, color, and threshold
+		const searchResult = await new Promise<{ searchTerms: string; color: string; threshold: number } | null>((resolve) => {
+			class SearchTermsColorModal extends Modal {
+				private searchInput: HTMLInputElement;
+				private selectedColor: string;
+				private defaultColors: string[];
+				private thresholdInput: HTMLInputElement;
+				private defaultThreshold: number;
+
+				constructor(app: App, defaultColors: string[], defaultThreshold: number) {
+					super(app);
+					this.defaultColors = defaultColors;
+					this.selectedColor = defaultColors[0] || '#E67E22';
+					this.defaultThreshold = defaultThreshold;
+				}
+
+				onOpen() {
+					const { contentEl } = this;
+					contentEl.empty();
+
+					contentEl.createEl('h2', { text: 'Enter Search Terms' });
+
+					// Search terms input
+					const searchLabel = contentEl.createEl('label', { 
+						text: 'Enter search terms to find matching notes (e.g., "John Adams" or "mentorship"):',
+						attr: { style: 'display: block; margin: 10px 0 5px 0;' }
+					});
+
+					this.searchInput = contentEl.createEl('input', {
+						type: 'text',
+						placeholder: 'Search terms...',
+						attr: { 
+							style: 'width: 100%; margin: 5px 0 15px 0; padding: 8px;'
+						},
+					});
+
+					this.searchInput.focus();
+
+					// Color selection
+					const colorSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
+					colorSection.createEl('label', { 
+						text: 'Region Color:', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' } 
+					});
+
+					// Color preview
+					const colorPreview = colorSection.createDiv({
+						attr: {
+							style: `width: 100%; height: 30px; background-color: ${this.selectedColor}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`,
+							title: 'Click to change color'
+						}
+					});
+
+					// Obsidian canvas default palette colors
+					const obsidianCanvasColors = [
+						'#E67E22', '#3498DB', '#2ECC71', '#9B59B6', '#E74C3C', '#F39C12',
+					];
+					const allColors = [...obsidianCanvasColors, ...this.defaultColors.filter(c => !obsidianCanvasColors.includes(c))];
+
+					// Color buttons
+					const colorGrid = colorSection.createDiv({ 
+						attr: { style: 'display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;' } 
+					});
+					
+					allColors.forEach(color => {
+						const colorButton = colorGrid.createEl('button', {
+							text: '',
+							attr: {
+								style: `width: 30px; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer;`,
+								title: color
+							},
+						});
+						colorButton.addEventListener('click', () => {
+							this.selectedColor = color;
+							colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+						});
+					});
+
+					// Custom color input
+					const customColorContainer = colorSection.createDiv({ attr: { style: 'margin-top: 10px;' } });
+					customColorContainer.createEl('label', { 
+						text: 'Custom color (hex):', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-size: 0.9em;' } 
+					});
+					
+					const colorInput = customColorContainer.createEl('input', {
+						type: 'text',
+						placeholder: '#E67E22',
+						value: this.selectedColor,
+						attr: { style: 'width: 100px; padding: 5px;' },
+					});
+
+					colorInput.addEventListener('input', (e) => {
+						const value = (e.target as HTMLInputElement).value;
+						if (/^#[0-9A-Fa-f]{6}$/.test(value)) {
+							this.selectedColor = value;
+							colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${value}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+						}
+					});
+
+					// Threshold slider
+					const thresholdSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
+					thresholdSection.createEl('label', { 
+						text: 'Similarity Threshold:',
+						attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' } 
+					});
+					
+					const thresholdContainer = thresholdSection.createDiv({ 
+						attr: { style: 'display: flex; align-items: center; gap: 10px;' } 
+					});
+					
+					// Slider
+					this.thresholdInput = thresholdContainer.createEl('input', {
+						type: 'range',
+						attr: { 
+							style: 'flex: 1;',
+							min: '0',
+							max: '1',
+							step: '0.05',
+							value: String(this.defaultThreshold)
+						}
+					});
+					
+					// Value display
+					const valueDisplay = thresholdContainer.createEl('span', {
+						text: this.defaultThreshold.toFixed(2),
+						attr: { 
+							style: 'min-width: 45px; text-align: right; font-weight: 500;' 
+						}
+					});
+					
+					// Update value display when slider changes
+					this.thresholdInput.addEventListener('input', (e) => {
+						const value = parseFloat((e.target as HTMLInputElement).value);
+						valueDisplay.textContent = value.toFixed(2);
+					});
+					
+					// Help text
+					thresholdSection.createEl('div', {
+						text: 'Higher = More restrictive',
+						attr: { style: 'font-size: 0.85em; color: var(--text-muted); margin-top: 5px;' }
+					});
+
+					const buttonContainer = contentEl.createDiv({ attr: { style: 'text-align: right; margin-top: 20px;' } });
+					
+					const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
+					cancelButton.addEventListener('click', () => {
+						this.close();
+						resolve(null);
+					});
+
+					const submitButton = buttonContainer.createEl('button', { text: 'OK', attr: { style: 'margin-left: 10px;' } });
+					submitButton.addEventListener('click', () => {
+						const text = this.searchInput.value.trim();
+						const threshold = parseFloat(this.thresholdInput.value);
+						if (text && !isNaN(threshold)) {
+							resolve({ searchTerms: text, color: this.selectedColor, threshold });
+						} else {
+							resolve(null);
+						}
+						this.close();
+					});
+
+					this.searchInput.addEventListener('keydown', (e) => {
+						if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+							const text = this.searchInput.value.trim();
+							const threshold = parseFloat(this.thresholdInput.value);
+							if (text && !isNaN(threshold)) {
+								resolve({ searchTerms: text, color: this.selectedColor, threshold });
+							} else {
+								resolve(null);
+							}
+							this.close();
+						}
+						if (e.key === 'Escape') {
+							this.close();
+							resolve(null);
+						}
+					});
+				}
+
+				onClose() {
+					const { contentEl } = this;
+					contentEl.empty();
+				}
+			}
+
+			const defaultColors = this.settings.defaultColors.length > 0 
+				? this.settings.defaultColors 
+				: ['#E67E22', '#3498DB', '#9B59B6', '#1ABC9C', '#E74C3C', '#F39C12', '#34495E', '#16A085'];
+			
+			const defaultThreshold = this.settings.embeddingSimilarityThreshold ?? 0.65;
+			const modal = new SearchTermsColorModal(this.app, defaultColors, defaultThreshold);
 			modal.open();
 		});
 
-		if (!searchTerms || searchTerms.trim() === '') {
+		if (!searchResult || !searchResult.searchTerms || searchResult.searchTerms.trim() === '') {
 			return;
 		}
+
+		const searchTerms = searchResult.searchTerms;
+		const color = searchResult.color;
+		const threshold = searchResult.threshold;
 
 		// Search for files matching the terms
 		const searchResults = await this.searchFiles(searchTerms);
@@ -267,8 +586,8 @@ export class CreateRegionCommands {
 		processingInfo.similarNotesFound = similarNotes.length;
 		processingInfo.similarityThreshold = this.settings.embeddingSimilarityThreshold;
 
-		// Combine search results with similar notes
-		const allNotes = [...filteredResults];
+		// Combine search results with all similar notes (grid layout only)
+		const allNotes: TFile[] = [...filteredResults];
 		for (const { file } of similarNotes) {
 			if (!allNotes.some(n => n.path === file.path)) {
 				allNotes.push(file);
@@ -310,31 +629,8 @@ export class CreateRegionCommands {
 			}
 		}
 
-		// Update status: finalizing
-		if (this.plugin?.updateRegionCreationStatus) {
-			this.plugin.updateRegionCreationStatus({
-				isCreating: true,
-				step: 'Finalizing region...',
-				details: 'Please provide a name and color for the region'
-			});
-		}
-
-		// Prompt for name (pre-filled with AI suggestion) and color
-		const name = await this.promptForName(suggestedName);
-		if (!name) {
-			if (this.plugin?.updateRegionCreationStatus) {
-				this.plugin.updateRegionCreationStatus({ isCreating: false });
-			}
-			return;
-		}
-
-		const color = await this.promptForColor();
-		if (!color) {
-			if (this.plugin?.updateRegionCreationStatus) {
-				this.plugin.updateRegionCreationStatus({ isCreating: false });
-			}
-			return;
-		}
+		// Use search terms as the region name
+		const name = searchTerms;
 
 		// Create region
 		const notePaths = allNotes.map(file => file.path);
@@ -349,6 +645,11 @@ export class CreateRegionCommands {
 			},
 			notePaths
 		);
+
+		// Save the threshold used for this region
+		this.regionService.updateRegion(region.id, {
+			similarityThreshold: this.settings.embeddingSimilarityThreshold
+		});
 
 		// Trigger save and UI update
 		if (this.plugin?.onRegionUpdate) {
@@ -370,9 +671,18 @@ export class CreateRegionCommands {
 			return;
 		}
 
-		// Prompt for concept text using a textarea modal
-		const conceptText = await new Promise<string | null>((resolve) => {
+		// Prompt for concept text, output mode, and threshold using a textarea modal
+		const result = await new Promise<{ conceptText: string; mode: 'walkabout' | 'hopscotch' | 'rolling-path' | 'crowd'; threshold: number } | null>((resolve) => {
 			class ConceptTextModal extends Modal {
+				private selectedMode: 'walkabout' | 'hopscotch' | 'rolling-path' | 'crowd' = 'walkabout';
+				private thresholdInput: HTMLInputElement;
+				private defaultThreshold: number;
+
+				constructor(app: App, defaultThreshold: number) {
+					super(app);
+					this.defaultThreshold = defaultThreshold;
+				}
+
 				onOpen() {
 					const { contentEl } = this;
 					contentEl.empty();
@@ -395,6 +705,110 @@ export class CreateRegionCommands {
 
 					textarea.focus();
 
+					// Output mode selection - radio buttons next to title, description below
+					const modeSection = contentEl.createDiv({ 
+						attr: { style: 'margin: 15px 0;' } 
+					});
+					
+					modeSection.createEl('label', { 
+						text: 'Output Mode:',
+						attr: { style: 'font-weight: 500; margin-bottom: 10px; display: block;' }
+					});
+
+					const modes: { value: 'walkabout' | 'hopscotch' | 'rolling-path' | 'crowd'; label: string; desc: string }[] = [
+						{ value: 'walkabout', label: 'Walkabout', desc: 'All semantically similar notes arranged around the concept. Distance reflects similarity.' },
+						{ value: 'hopscotch', label: 'Hopscotch', desc: 'A path starting with the concept, then the most similar note, then most similar to that, etc. (left to right)' },
+						{ value: 'rolling-path', label: 'Rolling Path', desc: 'A path that aggregates all notes at each step, finding the most similar to the aggregation next (left to right)' },
+						{ value: 'crowd', label: 'Crowd', desc: 'All related notes are placed on a canvas in no particular order or arrangement.' },
+					];
+
+					modes.forEach((mode) => {
+						const modeDiv = modeSection.createDiv({ 
+							attr: { style: 'margin: 8px 0;' } 
+						});
+
+						const modeRow = modeDiv.createDiv({ 
+							attr: { style: 'display: flex; align-items: center; gap: 8px;' } 
+						});
+
+						const radio = modeRow.createEl('input', {
+							type: 'radio',
+							attr: { 
+								id: `mode-${mode.value}`,
+								name: 'semantic-mode',
+								value: mode.value
+							}
+						});
+
+						if (mode.value === 'walkabout') {
+							radio.checked = true;
+						}
+
+						radio.addEventListener('change', () => {
+							if (radio.checked) {
+								this.selectedMode = mode.value;
+							}
+						});
+
+						modeRow.createEl('label', {
+							text: mode.label,
+							attr: { 
+								for: `mode-${mode.value}`,
+								style: 'cursor: pointer; font-weight: 500; margin: 0;'
+							}
+						});
+						
+						modeDiv.createEl('div', {
+							text: mode.desc,
+							attr: { 
+								style: 'font-size: 0.85em; color: var(--text-muted); margin-left: 24px; margin-top: 2px;'
+							}
+						});
+					});
+
+					// Threshold slider
+					const thresholdSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
+					thresholdSection.createEl('label', { 
+						text: 'Similarity Threshold:',
+						attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' } 
+					});
+					
+					const thresholdContainer = thresholdSection.createDiv({ 
+						attr: { style: 'display: flex; align-items: center; gap: 10px;' } 
+					});
+					
+					// Slider
+					this.thresholdInput = thresholdContainer.createEl('input', {
+						type: 'range',
+						attr: { 
+							style: 'flex: 1;',
+							min: '0',
+							max: '1',
+							step: '0.05',
+							value: String(this.defaultThreshold)
+						}
+					});
+					
+					// Value display
+					const valueDisplay = thresholdContainer.createEl('span', {
+						text: this.defaultThreshold.toFixed(2),
+						attr: { 
+							style: 'min-width: 45px; text-align: right; font-weight: 500;' 
+						}
+					});
+					
+					// Update value display when slider changes
+					this.thresholdInput.addEventListener('input', (e) => {
+						const value = parseFloat((e.target as HTMLInputElement).value);
+						valueDisplay.textContent = value.toFixed(2);
+					});
+					
+					// Help text
+					thresholdSection.createEl('div', {
+						text: 'Higher = More restrictive',
+						attr: { style: 'font-size: 0.85em; color: var(--text-muted); margin-top: 5px;' }
+					});
+
 					const buttonContainer = contentEl.createDiv({ attr: { style: 'text-align: right; margin-top: 10px;' } });
 					
 					const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
@@ -405,13 +819,25 @@ export class CreateRegionCommands {
 
 					const submitButton = buttonContainer.createEl('button', { text: 'OK', attr: { style: 'margin-left: 10px;' } });
 					submitButton.addEventListener('click', () => {
-						resolve(textarea.value.trim() || null);
+						const text = textarea.value.trim();
+						const threshold = parseFloat(this.thresholdInput.value);
+						if (text && !isNaN(threshold)) {
+							resolve({ conceptText: text, mode: this.selectedMode, threshold: threshold });
+						} else {
+							resolve(null);
+						}
 						this.close();
 					});
 
 					textarea.addEventListener('keydown', (e) => {
 						if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-							resolve(textarea.value.trim() || null);
+							const text = textarea.value.trim();
+							const threshold = parseFloat(this.thresholdInput.value);
+							if (text && !isNaN(threshold)) {
+								resolve({ conceptText: text, mode: this.selectedMode, threshold: threshold });
+							} else {
+								resolve(null);
+							}
 							this.close();
 						}
 						if (e.key === 'Escape') {
@@ -427,13 +853,18 @@ export class CreateRegionCommands {
 				}
 			}
 
-			const modal = new ConceptTextModal(this.app);
+			const defaultThreshold = this.settings.embeddingSimilarityThreshold ?? 0.65;
+			const modal = new ConceptTextModal(this.app, defaultThreshold);
 			modal.open();
 		});
 
-		if (!conceptText || conceptText.trim() === '') {
+		if (!result || !result.conceptText || result.conceptText.trim() === '') {
 			return;
 		}
+
+		const conceptText = result.conceptText;
+		const semanticMode = result.mode;
+		const threshold = result.threshold;
 
 		// Update status
 		if (this.plugin?.updateRegionCreationStatus) {
@@ -478,6 +909,12 @@ export class CreateRegionCommands {
 			this.noteService
 		);
 
+		// Temporarily update threshold for this search
+		const thresholdToUse = threshold ?? this.settings.embeddingSimilarityThreshold;
+		const originalThreshold = this.settings.embeddingSimilarityThreshold;
+		this.settings.embeddingSimilarityThreshold = thresholdToUse;
+		this.embeddingService.updateSettings(this.settings);
+
 		// Find similar notes using embedding analysis
 		const similarNotes = await this.embeddingService.findSimilarNotes(
 			conceptEmbedding,
@@ -486,8 +923,37 @@ export class CreateRegionCommands {
 			100 // Max 100 similar notes
 		);
 
+		// Restore original threshold
+		this.settings.embeddingSimilarityThreshold = originalThreshold;
+		this.embeddingService.updateSettings(this.settings);
+
 		if (similarNotes.length === 0) {
 			new Notice('No semantically similar notes found.');
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return;
+		}
+
+		// Apply different algorithms based on mode
+		let finalFiles: TFile[] = [];
+		
+		if (semanticMode === 'walkabout') {
+			// Walkabout: Use all similar notes (current behavior)
+			finalFiles = similarNotes.map(({ file }) => file);
+		} else if (semanticMode === 'hopscotch') {
+			// Hopscotch: Create a path starting with concept, then most similar, then most similar to that, etc.
+			finalFiles = await this.createHopscotchPath(conceptEmbedding, similarNotes, filteredCandidates);
+		} else if (semanticMode === 'rolling-path') {
+			// Rolling Path: Aggregate all notes at each step, find most similar to aggregation
+			finalFiles = await this.createRollingPath(conceptEmbedding, similarNotes, filteredCandidates);
+		} else if (semanticMode === 'crowd') {
+			// Crowd: All related notes in no particular order (same as walkabout, just different arrangement)
+			finalFiles = similarNotes.map(({ file }) => file);
+		}
+
+		if (finalFiles.length === 0) {
+			new Notice('No notes found for the selected output mode.');
 			if (this.plugin?.updateRegionCreationStatus) {
 				this.plugin.updateRegionCreationStatus({ isCreating: false });
 			}
@@ -498,11 +964,13 @@ export class CreateRegionCommands {
 		const processingInfo: any = {
 			conceptText: conceptText,
 			similarNotesFound: similarNotes.length,
-			similarityThreshold: this.settings.embeddingSimilarityThreshold,
+			finalNotesCount: finalFiles.length,
+			similarityThreshold: threshold,
+			semanticSimilarityMode: semanticMode,
 		};
 
-		// Get the files from similar notes
-		const matchingFiles = similarNotes.map(({ file }) => file);
+		// Get the files from final selection
+		const matchingFiles = finalFiles;
 
 		// Generate region name using AI
 		if (this.plugin?.updateRegionCreationStatus) {
@@ -567,6 +1035,11 @@ export class CreateRegionCommands {
 			},
 			notePaths
 		);
+		
+		// Save the threshold used for this region
+		this.regionService.updateRegion(region.id, {
+			similarityThreshold: threshold
+		});
 
 		// Trigger save and UI update
 		if (this.plugin?.onRegionUpdate) {
@@ -580,7 +1053,331 @@ export class CreateRegionCommands {
 		new Notice(`Region "${name}" created with ${notePaths.length} semantically similar notes.`);
 	}
 
+	// Helper method to create region from semantic similarity with pre-provided parameters (for re-running)
+	// Returns true if notes were found and region was created, false otherwise
+	async createRegionFromSemanticSimilarityWithParams(
+		conceptText: string, 
+		name: string, 
+		color: string,
+		semanticMode: 'walkabout' | 'hopscotch' | 'rolling-path' | 'crowd' = 'walkabout'
+	): Promise<boolean> {
+		// Check if local model is active
+		if (this.settings.aiMode !== 'local') {
+			new Notice('Semantic Similarity Analysis is only available when local AI mode is enabled.');
+			return false;
+		}
+
+		if (!conceptText || conceptText.trim() === '') {
+			return false;
+		}
+
+		// Update status
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Generating embedding for concept...',
+				details: `Analyzing: ${conceptText}`
+			});
+		}
+
+		new Notice('Generating embedding for concept...');
+
+		// Generate embedding for the concept
+		let conceptEmbedding: number[];
+		try {
+			conceptEmbedding = await this.embeddingService.generateEmbedding(conceptText);
+		} catch (error) {
+			console.error('[Thoughtlands] Failed to generate concept embedding:', error);
+			new Notice('Failed to generate embedding for concept. Please try again.');
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return false;
+		}
+
+		// Update status
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Finding similar notes...',
+				details: 'Searching vault for semantically similar notes'
+			});
+		}
+
+		// Get all markdown files as candidates
+		const allMarkdownFiles = this.app.vault.getMarkdownFiles();
+
+		// Filter candidates by settings
+		const filteredCandidates = this.regionService.filterNotesByIgnores(
+			allMarkdownFiles,
+			this.app.metadataCache,
+			this.noteService
+		);
+
+		// Find similar notes using embedding analysis
+		const similarNotes = await this.embeddingService.findSimilarNotes(
+			conceptEmbedding,
+			filteredCandidates,
+			[], // No exclusions
+			100 // Max 100 similar notes
+		);
+
+		if (similarNotes.length === 0) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return false;
+		}
+
+		// Apply different algorithms based on mode
+		let finalFiles: TFile[] = [];
+		
+		if (semanticMode === 'walkabout') {
+			// Walkabout: Use all similar notes (current behavior)
+			finalFiles = similarNotes.map(({ file }) => file);
+		} else if (semanticMode === 'hopscotch') {
+			// Hopscotch: Create a path starting with concept, then most similar, then most similar to that, etc.
+			finalFiles = await this.createHopscotchPath(conceptEmbedding, similarNotes, filteredCandidates);
+		} else if (semanticMode === 'rolling-path') {
+			// Rolling Path: Aggregate all notes at each step, find most similar to aggregation
+			finalFiles = await this.createRollingPath(conceptEmbedding, similarNotes, filteredCandidates);
+		} else if (semanticMode === 'crowd') {
+			// Crowd: All related notes in no particular order (same as walkabout, just different arrangement)
+			finalFiles = similarNotes.map(({ file }) => file);
+		}
+
+		if (finalFiles.length === 0) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return false;
+		}
+
+		// Track processing info
+		const processingInfo: any = {
+			conceptText: conceptText,
+			similarNotesFound: similarNotes.length,
+			finalNotesCount: finalFiles.length,
+			similarityThreshold: this.settings.embeddingSimilarityThreshold,
+			semanticSimilarityMode: semanticMode,
+		};
+
+		// Get the files from final selection
+		const matchingFiles = finalFiles;
+
+		// Create region (using provided name and color)
+		const notePaths = matchingFiles.map(file => file.path);
+		const region = this.regionService.createRegion(
+			name,
+			color,
+			'concept',
+			{
+				type: 'concept',
+				concepts: [conceptText],
+				aiMode: 'local',
+				processingInfo: processingInfo,
+			},
+			notePaths
+		);
+		
+		// Save the threshold used for this region
+		this.regionService.updateRegion(region.id, {
+			similarityThreshold: this.settings.embeddingSimilarityThreshold
+		});
+
+		// Trigger save and UI update
+		if (this.plugin?.onRegionUpdate) {
+			await this.plugin.onRegionUpdate();
+		}
+
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({ isCreating: false });
+		}
+
+		new Notice(`Region "${name}" re-created with ${notePaths.length} semantically similar notes.`);
+		return true;
+	}
+
+	// Helper method to create region from search + AI analysis with pre-provided parameters (for re-running)
+	// Returns true if notes were found and region was created, false otherwise
+	async createRegionFromSearchWithAIAnalysisWithParams(
+		searchQuery: string, 
+		name: string, 
+		color: string,
+		threshold?: number
+	): Promise<boolean> {
+		// Check if local model is active
+		if (this.settings.aiMode !== 'local') {
+			new Notice('AI Analysis is only available when local AI mode is enabled.');
+			return false;
+		}
+
+		if (!searchQuery || searchQuery.trim() === '') {
+			return false;
+		}
+
+		// Search for files matching the terms
+		const searchResults = await this.searchFiles(searchQuery);
+		
+		if (searchResults.length === 0) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return false;
+		}
+
+		// Filter by all settings (paths and tags)
+		const filteredResults = this.regionService.filterNotesByIgnores(
+			searchResults,
+			this.app.metadataCache,
+			this.noteService
+		);
+
+		if (filteredResults.length === 0) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return false;
+		}
+
+		// Track processing info
+		const processingInfo: any = {
+			searchResultsCount: filteredResults.length,
+		};
+
+		// Update status
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Analyzing search results with AI...',
+				details: `Computing embeddings for ${filteredResults.length} search results`
+			});
+		}
+
+		new Notice('Analyzing search results with AI embeddings...');
+
+		// Get embeddings for search results
+		const searchResultEmbeddings: number[][] = [];
+		const filesWithEmbeddings: TFile[] = [];
+		
+		const storageService = this.embeddingService.getStorageService();
+		for (const file of filteredResults) {
+			const embedding = await storageService.getEmbedding(file);
+			if (embedding) {
+				searchResultEmbeddings.push(embedding);
+				filesWithEmbeddings.push(file);
+			}
+		}
+
+		processingInfo.searchResultsWithEmbeddings = filesWithEmbeddings.length;
+
+		if (searchResultEmbeddings.length === 0) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return false;
+		}
+
+		// Calculate centroid from search result embeddings
+		const centroid = this.embeddingService.calculateCentroid(searchResultEmbeddings);
+		
+		if (centroid.length === 0) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return false;
+		}
+
+		// Update status
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({
+				isCreating: true,
+				step: 'Finding similar notes...',
+				details: `Searching for notes similar to ${filesWithEmbeddings.length} search results`
+			});
+		}
+
+		// Find similar notes using embedding analysis
+		// Get all markdown files as candidates (excluding search results)
+		const allMarkdownFiles = this.app.vault.getMarkdownFiles();
+		const candidateFiles = allMarkdownFiles.filter(f => 
+			!filteredResults.some(sr => sr.path === f.path)
+		);
+
+		// Filter candidates by settings
+		const filteredCandidates = this.regionService.filterNotesByIgnores(
+			candidateFiles,
+			this.app.metadataCache,
+			this.noteService
+		);
+
+		const similarNotes = await this.embeddingService.findSimilarNotes(
+			centroid,
+			filteredCandidates,
+			filteredResults,
+			50 // Max 50 additional similar notes
+		);
+
+		processingInfo.similarNotesFound = similarNotes.length;
+		processingInfo.similarityThreshold = this.settings.embeddingSimilarityThreshold;
+
+		// Combine search results with similar notes
+		const allNotes = [...filteredResults];
+		for (const { file } of similarNotes) {
+			if (!allNotes.some(n => n.path === file.path)) {
+				allNotes.push(file);
+			}
+		}
+
+		if (allNotes.length === 0) {
+			if (this.plugin?.updateRegionCreationStatus) {
+				this.plugin.updateRegionCreationStatus({ isCreating: false });
+			}
+			return false;
+		}
+
+		// Create region (using provided name and color)
+		const notePaths = allNotes.map(file => file.path);
+		const region = this.regionService.createRegion(
+			name,
+			color,
+			'search',
+			{
+				type: 'search',
+				query: searchQuery || '',
+				processingInfo: processingInfo,
+			},
+			notePaths
+		);
+		
+		// Save the threshold used for this region
+		this.regionService.updateRegion(region.id, {
+			similarityThreshold: this.settings.embeddingSimilarityThreshold
+		});
+
+		// Trigger save and UI update
+		if (this.plugin?.onRegionUpdate) {
+			await this.plugin.onRegionUpdate();
+		}
+
+		if (this.plugin?.updateRegionCreationStatus) {
+			this.plugin.updateRegionCreationStatus({ isCreating: false });
+		}
+
+		const additionalCount = similarNotes.length;
+		new Notice(`Region "${name}" re-created with ${notePaths.length} notes (${filteredResults.length} from search + ${additionalCount} from AI analysis).`);
+		return true;
+	}
+
 	async createRegionFromConcept(): Promise<void> {
+		// Check if OpenAI key is set when using OpenAI mode
+		if (this.settings.aiMode === 'openai') {
+			if (!this.settings.openAIApiKey || this.settings.openAIApiKey.trim().length === 0) {
+				new Notice('OpenAI API key is required. Please set it in the plugin settings.');
+				return;
+			}
+		}
+		
 		// Prompt for concepts and scope
 		const conceptInput = await this.promptForConceptsWithScope();
 		if (!conceptInput || conceptInput.concepts.length === 0) {
@@ -601,10 +1398,10 @@ export class CreateRegionCommands {
 		}
 
 		// Step 1: Get initial tag suggestions from AI (OpenAI or Local)
-		const useLocal = this.settings.aiMode === 'local';
-		new Notice(useLocal ? 'Querying local AI for related tags...' : 'Querying AI for related tags...');
+		const useLocalForConcept = this.settings.aiMode === 'local';
+		new Notice(useLocalForConcept ? 'Querying local AI for related tags...' : 'Querying AI for related tags...');
 		const conceptDescription = concepts.length === 1 ? concepts[0] : concepts.join(', ');
-		console.log('[Thoughtlands] Querying', useLocal ? 'Local AI' : 'OpenAI', 'for tags related to concept:', conceptDescription, 'with scope:', scope);
+		console.log('[Thoughtlands] Querying', useLocalForConcept ? 'Local AI' : 'OpenAI', 'for tags related to concept:', conceptDescription, 'with scope:', scope);
 
 		// Get all available tags from the vault to provide to AI
 		const availableTags = this.noteService.getAllTags();
@@ -613,7 +1410,7 @@ export class CreateRegionCommands {
 		// Create a case-insensitive set for quick lookup
 		const availableTagsSet = new Set(availableTags.map(t => t.toLowerCase()));
 
-		const initialAiResponse = useLocal
+		const initialAiResponse = useLocalForConcept
 			? await this.localAIService.getRelatedTags(concepts, scope, undefined, availableTags)
 			: await this.openAIService.getRelatedTags(concepts, scope, undefined, availableTags);
 		
@@ -691,7 +1488,7 @@ export class CreateRegionCommands {
 		// Step 3: Filter tags by relevance using the samples
 		new Notice('Refining tag selection...');
 		const maxTags = this.getMaxTagsForScope(scope);
-		const aiResponse = useLocal
+		const aiResponse = useLocalForConcept
 			? await this.localAIService.filterTagsByRelevance(concepts, validInitialTags, tagSamples, maxTags, availableTags)
 			: await this.openAIService.filterTagsByRelevance(concepts, validInitialTags, tagSamples, maxTags, availableTags);
 		
@@ -796,7 +1593,13 @@ export class CreateRegionCommands {
 		let embeddingRemovedCount = 0;
 		let embeddingAddedCount = 0;
 		const notesBeforeEmbedding = finalNotes.length;
-		if (useLocal && this.embeddingService.isEmbeddingProcessComplete()) {
+		if (useLocalForConcept && this.embeddingService.isEmbeddingProcessComplete()) {
+			// Temporarily update threshold for this search (will be set after nameColor is obtained)
+			const originalThreshold = this.settings.embeddingSimilarityThreshold;
+			// Note: threshold will be set after nameColor is obtained, use default for now
+			const tempThreshold = this.settings.embeddingSimilarityThreshold;
+			this.settings.embeddingSimilarityThreshold = tempThreshold;
+			this.embeddingService.updateSettings(this.settings);
 			try {
 				// Update status: embedding filtering
 				if (this.plugin?.updateRegionCreationStatus) {
@@ -869,7 +1672,10 @@ export class CreateRegionCommands {
 				}
 				new Notice('Embedding filtering failed, using all matching notes.');
 			}
-		} else if (useLocal && !this.embeddingService.isEmbeddingProcessComplete()) {
+			// Restore original threshold
+			this.settings.embeddingSimilarityThreshold = originalThreshold;
+			this.embeddingService.updateSettings(this.settings);
+		} else if (useLocalForConcept && !this.embeddingService.isEmbeddingProcessComplete()) {
 			console.log('[Thoughtlands] Embeddings not complete, skipping embedding-based filtering');
 		}
 
@@ -909,7 +1715,7 @@ export class CreateRegionCommands {
 		// Generate region name using AI
 		new Notice('Generating region name...');
 		console.log('[Thoughtlands] Generating region name for concept:', conceptDescription);
-		const nameResponse = useLocal
+		const nameResponse = useLocalForConcept
 			? await this.localAIService.generateRegionName(concepts, filteredTags)
 			: await this.openAIService.generateRegionName(concepts, filteredTags);
 		
@@ -928,26 +1734,25 @@ export class CreateRegionCommands {
 			this.plugin.updateRegionCreationStatus({
 				isCreating: true,
 				step: 'Finalizing region...',
-				details: 'Please provide a name and color for the region'
+				details: 'Please confirm the region name and select a color'
 			});
 		}
 
 		// Prompt for name (pre-filled with AI suggestion) and color
-		const name = await this.promptForName(suggestedName);
-		if (!name) {
+		// Check if we need to show threshold slider (local model with embeddings)
+		const useLocal = this.settings.aiMode === 'local';
+		const showThreshold = useLocal && this.embeddingService.isEmbeddingProcessComplete();
+		
+		const nameColor = await this.promptForNameAndColor(suggestedName, showThreshold);
+		if (!nameColor || !nameColor.name) {
 			if (this.plugin?.updateRegionCreationStatus) {
 				this.plugin.updateRegionCreationStatus({ isCreating: false });
 			}
 			return;
 		}
 
-		const color = await this.promptForColor();
-		if (!color) {
-			if (this.plugin?.updateRegionCreationStatus) {
-				this.plugin.updateRegionCreationStatus({ isCreating: false });
-			}
-			return;
-		}
+		const name = nameColor.name;
+		const color = nameColor.color;
 
 		// Update status: creating
 		if (this.plugin?.updateRegionCreationStatus) {
@@ -984,6 +1789,13 @@ export class CreateRegionCommands {
 			},
 			notePaths
 		);
+
+		// Save the threshold used for this region (if embedding filtering was used)
+		if (embeddingFiltered) {
+			this.regionService.updateRegion(region.id, {
+				similarityThreshold: this.settings.embeddingSimilarityThreshold
+			});
+		}
 
 		console.log('[Thoughtlands] Region created successfully:', {
 			name: name,
@@ -1642,7 +2454,7 @@ export class CreateRegionCommands {
 				for (const result of view.searchResults) {
 					if (result && result.file instanceof TFile) {
 						if (!resultsSet.has(result.file.path)) {
-							results.push(result.file);
+						results.push(result.file);
 							resultsSet.add(result.file.path);
 							console.log('[Thoughtlands]   Leaf', leafIndex + 1, '- ✓ Added from searchResults:', result.file.path);
 						}
@@ -1667,7 +2479,7 @@ export class CreateRegionCommands {
 						for (const result of searchResults) {
 							if (result && result.file instanceof TFile) {
 								if (!resultsSet.has(result.file.path)) {
-									results.push(result.file);
+								results.push(result.file);
 									resultsSet.add(result.file.path);
 									console.log('[Thoughtlands]   Leaf', leafIndex + 1, '- ✓ Added from getResults():', result.file.path);
 								}
@@ -2437,7 +3249,7 @@ export class CreateRegionCommands {
 				}
 				console.log('[Thoughtlands] Leaf', leafIndex + 1, '- After resultDomLookup: Total =', results.length);
 			}
-			
+
 			// Try accessing results through contentEl or containerEl
 			if (view.contentEl && typeof view.contentEl.querySelectorAll === 'function') {
 				try {
@@ -2628,8 +3440,8 @@ export class CreateRegionCommands {
 										} else {
 											// Check children of tree-item for data-path
 											const pathElement = treeItemParent.querySelector('[data-path]');
-											if (pathElement) {
-												filePath = pathElement.getAttribute('data-path');
+										if (pathElement) {
+											filePath = pathElement.getAttribute('data-path');
 												if (filePath) {
 													console.log('[Thoughtlands] Found data-path in tree-item child:', filePath);
 												}
@@ -2647,16 +3459,16 @@ export class CreateRegionCommands {
 											console.log('[Thoughtlands] Found data-path on element at level', i, ':', filePath);
 											break;
 										}
-										currentElement = currentElement.parentElement;
+									currentElement = currentElement.parentElement;
 									}
 								}
 								
 								// If still no path, try to get from text content or internal link
 								if (!filePath) {
 									// Look for internal link in the element or its children
-									const link = element.querySelector('a.internal-link');
-									if (link) {
-										filePath = link.getAttribute('data-href') || link.getAttribute('href');
+										const link = element.querySelector('a.internal-link');
+										if (link) {
+											filePath = link.getAttribute('data-href') || link.getAttribute('href');
 										if (filePath) {
 											console.log('[Thoughtlands] Found file path from internal link:', filePath);
 										}
@@ -2771,7 +3583,7 @@ export class CreateRegionCommands {
 							if (!resultsSet.has(key)) {
 								const tFile = this.app.vault.getAbstractFileByPath(key);
 								if (tFile instanceof TFile) {
-									results.push(tFile);
+						results.push(tFile);
 									resultsSet.add(key);
 									console.log('[Thoughtlands]     ✓ Added from dom.resultDomLookup:', tFile.path);
 								} else {
@@ -3231,6 +4043,329 @@ export class CreateRegionCommands {
 		});
 	}
 
+	private async promptForNameAndColor(suggestedName: string = '', showThreshold: boolean = false): Promise<{ name: string; color: string; threshold?: number } | null> {
+		return new Promise((resolve) => {
+			class NameAndColorModal extends Modal {
+				private nameInput: HTMLInputElement;
+				private selectedColor: string;
+				private defaultColors: string[];
+				private thresholdInput: HTMLInputElement | null = null;
+				private defaultThreshold: number;
+				private showThreshold: boolean;
+
+				constructor(app: App, defaultColors: string[], suggestedName: string, defaultThreshold: number, showThreshold: boolean) {
+					super(app);
+					this.defaultColors = defaultColors;
+					this.selectedColor = defaultColors[0] || '#E67E22';
+					this.suggestedName = suggestedName;
+					this.defaultThreshold = defaultThreshold;
+					this.showThreshold = showThreshold;
+				}
+
+				private suggestedName: string;
+
+				onOpen() {
+					const { contentEl } = this;
+					contentEl.empty();
+
+					contentEl.createEl('h2', { text: 'Region Name and Color' });
+
+					// Name input
+					const nameSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
+					nameSection.createEl('label', { 
+						text: 'Region Name:', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' } 
+					});
+					this.nameInput = nameSection.createEl('input', {
+						type: 'text',
+						placeholder: 'Enter region name',
+						value: this.suggestedName,
+						attr: { style: 'width: 100%; padding: 8px;' },
+					});
+					this.nameInput.focus();
+					if (this.suggestedName) {
+						this.nameInput.select();
+					}
+
+					// Color selection
+					const colorSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
+					colorSection.createEl('label', { 
+						text: 'Region Color:', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' } 
+					});
+
+					// Color preview
+					const colorPreview = colorSection.createDiv({
+						attr: {
+							style: `width: 100%; height: 30px; background-color: ${this.selectedColor}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`,
+							title: 'Click to change color'
+						}
+					});
+
+					// Obsidian canvas default palette colors
+					const obsidianCanvasColors = [
+						'#E67E22', '#3498DB', '#2ECC71', '#9B59B6', '#E74C3C', '#F39C12',
+					];
+					const allColors = [...obsidianCanvasColors, ...this.defaultColors.filter(c => !obsidianCanvasColors.includes(c))];
+
+					// Color buttons
+					const colorGrid = colorSection.createDiv({ 
+						attr: { style: 'display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;' } 
+					});
+					
+					allColors.forEach(color => {
+						const colorButton = colorGrid.createEl('button', {
+							text: '',
+							attr: {
+								style: `width: 30px; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer;`,
+								title: color
+							},
+						});
+						colorButton.addEventListener('click', () => {
+							this.selectedColor = color;
+							colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+						});
+					});
+
+					// Custom color input
+					const customColorContainer = colorSection.createDiv({ attr: { style: 'margin-top: 10px;' } });
+					customColorContainer.createEl('label', { 
+						text: 'Custom color (hex):', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-size: 0.9em;' } 
+					});
+					
+					const colorInput = customColorContainer.createEl('input', {
+						type: 'text',
+						placeholder: '#E67E22',
+						value: this.selectedColor,
+						attr: { style: 'width: 100px; padding: 5px;' },
+					});
+
+					colorInput.addEventListener('input', (e) => {
+						const value = (e.target as HTMLInputElement).value;
+						if (/^#[0-9A-Fa-f]{6}$/.test(value)) {
+							this.selectedColor = value;
+							colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${value}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+						}
+					});
+
+					// Buttons
+					const buttonContainer = contentEl.createDiv({ attr: { style: 'text-align: right; margin-top: 20px;' } });
+					
+					const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
+					cancelButton.addEventListener('click', () => {
+						this.close();
+						resolve(null);
+					});
+
+					const submitButton = buttonContainer.createEl('button', { text: 'OK', attr: { style: 'margin-left: 10px;' } });
+					submitButton.addEventListener('click', () => {
+						const name = this.nameInput.value.trim();
+						if (name) {
+							resolve({ name, color: this.selectedColor });
+						} else {
+							resolve(null);
+						}
+						this.close();
+					});
+
+					this.nameInput.addEventListener('keydown', (e) => {
+						if (e.key === 'Enter') {
+							const name = this.nameInput.value.trim();
+							if (name) {
+								resolve({ name, color: this.selectedColor });
+							} else {
+								resolve(null);
+							}
+							this.close();
+						}
+						if (e.key === 'Escape') {
+							this.close();
+							resolve(null);
+						}
+					});
+				}
+
+				onClose() {
+					const { contentEl } = this;
+					contentEl.empty();
+				}
+			}
+
+			const defaultColors = this.settings.defaultColors.length > 0 
+				? this.settings.defaultColors 
+				: ['#E67E22', '#3498DB', '#9B59B6', '#1ABC9C', '#E74C3C', '#F39C12', '#34495E', '#16A085'];
+			
+			const defaultThreshold = this.settings.embeddingSimilarityThreshold ?? 0.65;
+			const modal = new NameAndColorModal(this.app, defaultColors, suggestedName, defaultThreshold, showThreshold);
+			modal.open();
+		});
+	}
+
+	private async promptForNameColorAndEdges(suggestedName: string = ''): Promise<{ name: string; color: string } | null> {
+		return new Promise((resolve) => {
+			class NameColorEdgesModal extends Modal {
+				private nameInput: HTMLInputElement;
+				private selectedColor: string;
+				private defaultColors: string[];
+
+				constructor(app: App, defaultColors: string[], suggestedName: string) {
+					super(app);
+					this.defaultColors = defaultColors;
+					this.selectedColor = defaultColors[0] || '#E67E22';
+				}
+
+				onOpen() {
+					const { contentEl } = this;
+					contentEl.empty();
+
+					contentEl.createEl('h2', { text: 'Region Name' });
+
+					// Name input
+					const nameSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
+					nameSection.createEl('label', { 
+						text: 'Region Name:', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' } 
+					});
+					this.nameInput = nameSection.createEl('input', {
+						type: 'text',
+						placeholder: 'Enter region name',
+						value: suggestedName,
+						attr: { style: 'width: 100%; padding: 8px;' },
+					});
+					this.nameInput.focus();
+					if (suggestedName) {
+						this.nameInput.select();
+					}
+
+					// Color selection
+					const colorSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
+					colorSection.createEl('label', { 
+						text: 'Region Color:', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' } 
+					});
+
+					// Color preview
+					const colorPreview = colorSection.createDiv({
+						attr: {
+							style: `width: 100%; height: 30px; background-color: ${this.selectedColor}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`,
+							title: 'Click to change color'
+						}
+					});
+
+					// Obsidian canvas default palette colors
+					const obsidianCanvasColors = [
+						'#E67E22', '#3498DB', '#2ECC71', '#9B59B6', '#E74C3C', '#F39C12',
+					];
+					const allColors = [...obsidianCanvasColors, ...this.defaultColors.filter(c => !obsidianCanvasColors.includes(c))];
+
+					// Color buttons
+					const colorGrid = colorSection.createDiv({ 
+						attr: { style: 'display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;' } 
+					});
+					
+					allColors.forEach(color => {
+						const colorButton = colorGrid.createEl('button', {
+							text: '',
+							attr: {
+								style: `width: 30px; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer;`,
+								title: color
+							},
+						});
+						colorButton.addEventListener('click', () => {
+							this.selectedColor = color;
+							colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+						});
+					});
+
+					// Custom color input
+					const customColorContainer = colorSection.createDiv({ attr: { style: 'margin-top: 10px;' } });
+					customColorContainer.createEl('label', { 
+						text: 'Custom color (hex):', 
+						attr: { style: 'display: block; margin-bottom: 5px; font-size: 0.9em;' } 
+					});
+					
+					const colorInput = customColorContainer.createEl('input', {
+						type: 'text',
+						placeholder: '#E67E22',
+						value: this.selectedColor,
+						attr: { style: 'width: 100px; padding: 5px;' },
+					});
+
+					colorInput.addEventListener('input', (e) => {
+						const value = (e.target as HTMLInputElement).value;
+						if (/^#[0-9A-Fa-f]{6}$/.test(value)) {
+							this.selectedColor = value;
+							colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${value}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+						}
+					});
+
+					// Open color picker on preview click
+					colorPreview.addEventListener('click', () => {
+						const colorModal = new ColorPickerModal(
+							this.app,
+							this.defaultColors,
+							(color: string) => {
+								this.selectedColor = color;
+								colorPreview.setAttribute('style', `width: 100%; height: 30px; background-color: ${color}; border: 2px solid var(--background-modifier-border); border-radius: 4px; margin-bottom: 8px; cursor: pointer;`);
+								colorInput.value = color;
+							}
+						);
+						colorModal.open();
+					});
+
+					// Buttons
+					const buttonContainer = contentEl.createDiv({ attr: { style: 'text-align: right; margin-top: 20px;' } });
+					
+					const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
+					cancelButton.addEventListener('click', () => {
+						this.close();
+						resolve(null);
+					});
+
+					const submitButton = buttonContainer.createEl('button', { text: 'OK', attr: { style: 'margin-left: 10px;' } });
+					submitButton.addEventListener('click', () => {
+						const name = this.nameInput.value.trim();
+						if (name) {
+							resolve({ name, color: this.selectedColor });
+						} else {
+							resolve(null);
+						}
+						this.close();
+					});
+
+					this.nameInput.addEventListener('keydown', (e) => {
+						if (e.key === 'Enter') {
+							const name = this.nameInput.value.trim();
+							if (name) {
+								resolve({ name, color: this.selectedColor });
+							} else {
+								resolve(null);
+							}
+							this.close();
+						}
+						if (e.key === 'Escape') {
+							this.close();
+							resolve(null);
+						}
+					});
+				}
+
+				onClose() {
+					const { contentEl } = this;
+					contentEl.empty();
+				}
+			}
+
+			const defaultColors = this.settings.defaultColors.length > 0 
+				? this.settings.defaultColors 
+				: ['#E67E22', '#3498DB', '#9B59B6', '#1ABC9C', '#E74C3C', '#F39C12', '#34495E', '#16A085'];
+			
+			const modal = new NameColorEdgesModal(this.app, defaultColors, suggestedName);
+			modal.open();
+		});
+	}
+
 	private async promptForConceptsWithScope(): Promise<{ concepts: string[]; scope: ConceptScope } | null> {
 		return new Promise((resolve) => {
 			const modal = new ConceptInputModal(
@@ -3283,16 +4418,16 @@ export class CreateRegionCommands {
 				
 				for (let i = 0; i < notesNeedingEmbeddings.length; i++) {
 					const note = notesNeedingEmbeddings[i];
-					try {
-						const embedding = await this.embeddingService.generateEmbeddingForFile(note);
-						noteEmbeddings.push({ file: note, embedding });
+				try {
+					const embedding = await this.embeddingService.generateEmbeddingForFile(note);
+					noteEmbeddings.push({ file: note, embedding });
 						
 						// Add delay between requests to avoid overwhelming Ollama (except for last item)
 						if (i < notesNeedingEmbeddings.length - 1) {
 							await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay between requests
 						}
-					} catch (error) {
-						console.warn('[Thoughtlands] Failed to generate embedding for', note.path, error);
+				} catch (error) {
+					console.warn('[Thoughtlands] Failed to generate embedding for', note.path, error);
 						// Skip note if embedding fails - don't include it with empty embedding
 						// This prevents 500 errors from cascading
 						
@@ -3374,6 +4509,149 @@ export class CreateRegionCommands {
 			console.error('[Thoughtlands] Error finding missed notes:', error);
 			return [];
 		}
+	}
+
+	// Create a hopscotch path: start with concept, then most similar to it, then most similar to that, etc.
+	private async createHopscotchPath(
+		conceptEmbedding: number[],
+		similarNotes: Array<{ file: TFile; similarity: number }>,
+		allCandidates: TFile[]
+	): Promise<TFile[]> {
+		const path: TFile[] = [];
+		const usedFiles = new Set<string>();
+		
+		// Start with the most similar note to the concept
+		if (similarNotes.length > 0) {
+			const first = similarNotes[0];
+			path.push(first.file);
+			usedFiles.add(first.file.path);
+		}
+
+		// Get embeddings for all candidates
+		const storageService = this.embeddingService.getStorageService();
+		const candidateEmbeddings = new Map<string, number[]>();
+		
+		for (const file of allCandidates) {
+			if (!usedFiles.has(file.path)) {
+				const embedding = await storageService.getEmbedding(file);
+				if (embedding) {
+					candidateEmbeddings.set(file.path, embedding);
+				}
+			}
+		}
+
+		// Build path: at each step, find the note most similar to the last note in the path
+		let currentEmbedding = conceptEmbedding;
+		const maxPathLength = Math.min(50, similarNotes.length); // Limit path length
+		
+		while (path.length < maxPathLength && candidateEmbeddings.size > 0) {
+			let bestFile: TFile | null = null;
+			let bestSimilarity = -1;
+			let bestEmbedding: number[] | null = null;
+
+			// Find the note most similar to the current embedding
+			for (const [filePath, embedding] of candidateEmbeddings.entries()) {
+				const similarity = this.embeddingService.cosineSimilarity(currentEmbedding, embedding);
+				if (similarity > bestSimilarity) {
+					bestSimilarity = similarity;
+					const file = allCandidates.find((f: TFile) => f.path === filePath);
+					if (file) {
+						bestFile = file;
+						bestEmbedding = embedding;
+					}
+				}
+			}
+
+			if (bestFile && bestEmbedding && bestSimilarity >= (this.settings.embeddingSimilarityThreshold ?? 0.65)) {
+				path.push(bestFile);
+				usedFiles.add(bestFile.path);
+				candidateEmbeddings.delete(bestFile.path);
+				currentEmbedding = bestEmbedding; // Move to next note's embedding
+			} else {
+				break; // No more similar notes above threshold
+			}
+		}
+
+		return path;
+	}
+
+	// Create a rolling path: aggregate all notes at each step, find most similar to aggregation
+	private async createRollingPath(
+		conceptEmbedding: number[],
+		similarNotes: Array<{ file: TFile; similarity: number }>,
+		allCandidates: TFile[]
+	): Promise<TFile[]> {
+		const path: TFile[] = [];
+		const usedFiles = new Set<string>();
+		
+		// Start with the most similar note to the concept
+		if (similarNotes.length > 0) {
+			const first = similarNotes[0];
+			path.push(first.file);
+			usedFiles.add(first.file.path);
+		}
+
+		// Get embeddings for all candidates
+		const storageService = this.embeddingService.getStorageService();
+		const candidateEmbeddings = new Map<string, number[]>();
+		
+		for (const file of allCandidates) {
+			if (!usedFiles.has(file.path)) {
+				const embedding = await storageService.getEmbedding(file);
+				if (embedding) {
+					candidateEmbeddings.set(file.path, embedding);
+				}
+			}
+		}
+
+		// Build path: at each step, aggregate all notes in path so far, find most similar to aggregation
+		const pathEmbeddings: number[][] = [conceptEmbedding]; // Start with concept embedding
+		const maxPathLength = Math.min(50, similarNotes.length); // Limit path length
+		
+		// Get embedding for first note in path
+		if (path.length > 0) {
+			const firstEmbedding = await storageService.getEmbedding(path[0]);
+			if (firstEmbedding) {
+				pathEmbeddings.push(firstEmbedding);
+			}
+		}
+		
+		while (path.length < maxPathLength && candidateEmbeddings.size > 0) {
+			// Aggregate all embeddings in the path so far (including concept)
+			const aggregatedEmbedding = this.embeddingService.calculateCentroid(pathEmbeddings);
+			
+			if (aggregatedEmbedding.length === 0) {
+				break;
+			}
+
+			let bestFile: TFile | null = null;
+			let bestSimilarity = -1;
+			let bestEmbedding: number[] | null = null;
+
+			// Find the note most similar to the aggregated embedding
+			for (const [filePath, embedding] of candidateEmbeddings.entries()) {
+				const similarity = this.embeddingService.cosineSimilarity(aggregatedEmbedding, embedding);
+				if (similarity > bestSimilarity) {
+					bestSimilarity = similarity;
+					const file = allCandidates.find((f: TFile) => f.path === filePath);
+					if (file) {
+						bestFile = file;
+						bestEmbedding = embedding;
+					}
+				}
+			}
+
+			if (bestFile && bestEmbedding && bestSimilarity >= (this.settings.embeddingSimilarityThreshold ?? 0.65)) {
+				path.push(bestFile);
+				usedFiles.add(bestFile.path);
+				candidateEmbeddings.delete(bestFile.path);
+				pathEmbeddings.push(bestEmbedding); // Add to aggregation for next step
+			} else {
+				break; // No more similar notes above threshold
+			}
+		}
+
+		return path;
 	}
 }
 

@@ -30,6 +30,7 @@ export class EmbeddingService {
 	private isProcessing: boolean = false;
 	private currentProgress: EmbeddingProgress | null = null;
 	private progressCallbacks: Set<(progress: EmbeddingProgress) => void> = new Set();
+	private filesGeneratingEmbeddings: Set<string> = new Set(); // Track files currently generating embeddings
 
 	constructor(app: App, settings: ThoughtlandsSettings, plugin: any) {
 		this.app = app;
@@ -393,6 +394,22 @@ export class EmbeddingService {
 			return storedEmbedding;
 		}
 
+		// Prevent duplicate processing - check if file is already being processed
+		if (this.filesGeneratingEmbeddings.has(file.path)) {
+			console.log(`[Thoughtlands:EmbeddingService] ${file.path} is already generating embedding, skipping duplicate request`);
+			// Wait a bit and check storage again (in case the other process finished)
+			await new Promise(resolve => setTimeout(resolve, 100));
+			const retryEmbedding = await this.storageService.getEmbedding(file);
+			if (retryEmbedding) {
+				return retryEmbedding;
+			}
+			// If still not found, throw error to indicate it's being processed
+			throw new Error(`Embedding generation already in progress for ${file.path}`);
+		}
+
+		// Mark as generating
+		this.filesGeneratingEmbeddings.add(file.path);
+
 		try {
 			const content = await this.app.vault.read(file);
 			// Use first 2000 characters for embedding (models have token limits)
@@ -441,6 +458,9 @@ export class EmbeddingService {
 		} catch (error) {
 			console.error(`[Thoughtlands:EmbeddingService] Error generating embedding for ${file.path}:`, error);
 			throw error;
+		} finally {
+			// Always remove from generating set
+			this.filesGeneratingEmbeddings.delete(file.path);
 		}
 	}
 

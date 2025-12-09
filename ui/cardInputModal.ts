@@ -4,6 +4,7 @@ import { ColorPickerModal } from './colorPickerModal';
 export interface CardInput {
 	text: string;
 	color: string;
+	drawEdges?: boolean;
 }
 
 export class CardInputModal extends Modal {
@@ -11,6 +12,7 @@ export class CardInputModal extends Modal {
 	private defaultColors: string[];
 	private onSubmit: (result: CardInput | null) => void;
 	private selectedColor: string;
+	private drawEdges: boolean = false;
 
 	constructor(
 		app: App,
@@ -29,7 +31,7 @@ export class CardInputModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 
-		contentEl.createEl('h2', { text: 'Create Card' });
+		contentEl.createEl('h2', { text: 'Canvas Options' });
 
 		// Text input
 		const textSection = contentEl.createDiv({ attr: { style: 'margin: 15px 0;' } });
@@ -132,6 +134,28 @@ export class CardInputModal extends Modal {
 			colorModal.open();
 		});
 
+		// Draw edges checkbox (after color section)
+		const edgesOption = colorSection.createDiv({ 
+			attr: { style: 'display: flex; align-items: center; gap: 8px; margin-top: 10px;' }
+		});
+		
+		const checkbox = edgesOption.createEl('input', {
+			type: 'checkbox',
+			attr: { id: 'draw-edges-checkbox' }
+		});
+		checkbox.checked = this.drawEdges;
+		checkbox.addEventListener('change', (e) => {
+			this.drawEdges = (e.target as HTMLInputElement).checked;
+		});
+		
+		edgesOption.createEl('label', {
+			text: 'Draw edges from links',
+			attr: { 
+				for: 'draw-edges-checkbox',
+				style: 'cursor: pointer; font-size: 0.9em;'
+			}
+		});
+
 		// Buttons
 		const buttonContainer = contentEl.createDiv({ 
 			attr: { style: 'text-align: right; margin-top: 20px;' } 
@@ -144,7 +168,7 @@ export class CardInputModal extends Modal {
 		});
 
 		const submitButton = buttonContainer.createEl('button', { 
-			text: 'Create Card', 
+			text: 'OK', 
 			attr: { style: 'margin-left: 10px;' } 
 		});
 		submitButton.addEventListener('click', () => {
@@ -152,7 +176,8 @@ export class CardInputModal extends Modal {
 			if (text) {
 				this.onSubmit({
 					text: text,
-					color: this.selectedColor
+					color: this.selectedColor,
+					drawEdges: this.drawEdges
 				});
 				this.close();
 			}

@@ -1,17 +1,74 @@
 import { App, Modal, TFile, Notice } from 'obsidian';
 import { Region, getModeDisplayName } from '../models/region';
 import { RegionService } from '../services/regionService';
+import { CreateRegionCommands } from '../commands/createRegionCommands';
+import { ThoughtlandsSettings } from '../settings/thoughtlandsSettings';
 
 export class RegionInfoModal extends Modal {
 	private region: Region;
 	private regionService?: RegionService;
+	private createRegionCommands?: CreateRegionCommands;
+	private settings?: ThoughtlandsSettings;
 	private onUpdate?: () => void;
 
-	constructor(app: App, region: Region, regionService?: RegionService, onUpdate?: () => void) {
+	constructor(
+		app: App, 
+		region: Region, 
+		regionService?: RegionService, 
+		onUpdate?: () => void,
+		createRegionCommands?: CreateRegionCommands,
+		settings?: ThoughtlandsSettings
+	) {
 		super(app);
 		this.region = region;
 		this.regionService = regionService;
+		this.createRegionCommands = createRegionCommands;
+		this.settings = settings;
 		this.onUpdate = onUpdate;
+	}
+
+	// Helper to check if region uses semantic similarity (walkabout, etc.)
+	private usesSemanticSimilarity(): boolean {
+		const info = this.region.source.processingInfo;
+		if (!info) return false;
+		
+		// Semantic similarity mode: has conceptText but no tag analysis (pure semantic similarity)
+		if (this.region.mode === 'concept' && info.conceptText && !info.initialTags && !info.refinedTags) {
+			return true;
+		}
+		
+		// Search + AI Analysis mode uses grid layout only, not semantic similarity modes
+		// AI-assisted tag search (concept mode with tags) uses grid layout only, not semantic similarity modes
+		// So we exclude both from this check
+		
+		return false;
+	}
+
+	// Helper to check if region uses semantic similarity filtering (for threshold slider)
+	private usesSemanticSimilarityFiltering(): boolean {
+		const info = this.region.source.processingInfo;
+		if (!info) return false;
+		
+		// Check if using local model
+		const isLocalModel = this.settings?.aiMode === 'local';
+		if (!isLocalModel) return false;
+		
+		// Semantic similarity mode (walkabout, etc.)
+		if (this.usesSemanticSimilarity()) {
+			return true;
+		}
+		
+		// Search + AI Analysis mode (has embedding filtering)
+		if (this.region.mode === 'search' && info.embeddingFiltered) {
+			return true;
+		}
+		
+		// AI-assisted tag analysis mode (has embedding filtering)
+		if (this.region.mode === 'concept' && info.initialTags && info.embeddingFiltered) {
+			return true;
+		}
+		
+		return false;
 	}
 
 	onOpen() {
@@ -33,6 +90,23 @@ export class RegionInfoModal extends Modal {
 			text: `Mode: ${getModeDisplayName(this.region.mode, this.region)}`,
 			attr: { style: 'margin: 5px 0;' }
 		});
+		
+		// Show semantic similarity mode if it exists (only for local model regions)
+		const semanticMode = this.region.source.processingInfo?.semanticSimilarityMode;
+		if (semanticMode) {
+			const modeDisplayNames: Record<string, string> = {
+				'walkabout': 'Walkabout',
+				'hopscotch': 'Hopscotch',
+				'rolling-path': 'Rolling Path',
+				'crowd': 'Crowd'
+			};
+			const modeDisplayName = modeDisplayNames[semanticMode] || semanticMode;
+			metadata.createEl('p', { 
+				text: `Semantic Similarity Type: ${modeDisplayName}`,
+				attr: { style: 'margin: 5px 0;' }
+			});
+		}
+		
 		metadata.createEl('p', { 
 			text: `Created: ${new Date(this.region.createdAt).toLocaleString()}`,
 			attr: { style: 'margin: 5px 0; font-size: 0.9em; color: var(--text-muted);' }
@@ -41,8 +115,258 @@ export class RegionInfoModal extends Modal {
 			text: `Notes: ${this.region.notes.length}`,
 			attr: { style: 'margin: 5px 0;' }
 		});
+
+		// Interactive settings section for regions that use semantic similarity filtering
+		if (this.usesSemanticSimilarityFiltering()) {
+			const settingsSection = metadata.createDiv({ 
+				attr: { 
+					style: 'margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--background-modifier-border);' 
+				} 
+			});
+			settingsSection.createEl('strong', { 
+				text: 'Region Settings', 
+				attr: { style: 'display: block; margin-bottom: 10px;' } 
+			});
+
+			// Threshold slider section
+			const thresholdSection = settingsSection.createDiv({ 
+				attr: { style: 'margin-bottom: 10px;' } 
+			});
+			
+			thresholdSection.createEl('label', { 
+				text: 'Threshold:',
+				attr: { style: 'display: block; margin-bottom: 5px; font-weight: 500;' }
+			});
+			
+			const thresholdSliderContainer = thresholdSection.createDiv({ 
+				attr: { style: 'display: flex; align-items: center; gap: 10px;' } 
+			});
+			
+			const thresholdInput = thresholdSliderContainer.createEl('input', {
+				type: 'range',
+				attr: { 
+					style: 'flex: 1;',
+					min: '0',
+					max: '1',
+					step: '0.05',
+					value: String(this.region.similarityThreshold ?? this.settings?.embeddingSimilarityThreshold ?? 0.65)
+				}
+			});
+			
+			// Value display
+			const thresholdValue = thresholdSliderContainer.createEl('span', {
+				text: String((this.region.similarityThreshold ?? this.settings?.embeddingSimilarityThreshold ?? 0.65).toFixed(2)),
+				attr: { 
+					style: 'min-width: 45px; text-align: right; font-weight: 500;' 
+				}
+			});
+			
+			// Update value display when slider changes
+			thresholdInput.addEventListener('input', (e) => {
+				const value = parseFloat((e.target as HTMLInputElement).value);
+				thresholdValue.textContent = value.toFixed(2);
+			});
+			
+			// Help text
+			thresholdSection.createEl('div', {
+				text: 'Higher = More restrictive',
+				attr: { style: 'font-size: 0.85em; color: var(--text-muted); margin-top: 5px;' }
+			});
+			
+			// Combined semantic mode setting with rerun button
+			const settingsContainer = settingsSection.createDiv({ 
+				attr: { style: 'display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;' } 
+			});
+
+			// Semantic mode dropdown
+			settingsContainer.createEl('label', { 
+				text: 'Mode:',
+				attr: { style: 'min-width: 60px;' }
+			});
+			
+			const modeSelect = settingsContainer.createEl('select', {
+				attr: { 
+					style: 'padding: 4px 8px; flex: 1; min-width: 150px;'
+				}
+			});
+			
+			const modeOptions: { value: 'walkabout' | 'hopscotch' | 'rolling-path' | 'crowd'; label: string }[] = [
+				{ value: 'walkabout', label: 'Walkabout' },
+				{ value: 'hopscotch', label: 'Hopscotch' },
+				{ value: 'rolling-path', label: 'Rolling Path' },
+				{ value: 'crowd', label: 'Crowd' }
+			];
+			
+			const currentMode = this.region.source.processingInfo?.semanticSimilarityMode || 'walkabout';
+			modeOptions.forEach(option => {
+				const optionEl = modeSelect.createEl('option', {
+					text: option.label,
+					attr: { value: option.value }
+				});
+				if (option.value === currentMode) {
+					optionEl.selected = true;
+				}
+			});
+
+			// Re-run button
+			const rerunButton = settingsContainer.createEl('button', {
+				text: 'Re-run',
+				attr: { 
+					style: 'padding: 4px 12px; font-size: 0.9em; margin-left: auto;'
+				}
+			});
+
+			// Disable rerun for semantic similarity regions when using OpenAI (ChatGPT)
+			if (this.usesSemanticSimilarity() && this.settings?.aiMode === 'openai') {
+				rerunButton.disabled = true;
+				rerunButton.setAttribute('title', 'Re-running semantic similarity analysis regions is not supported when using OpenAI');
+				rerunButton.style.opacity = '0.5';
+				rerunButton.style.cursor = 'not-allowed';
+			}
+
+			rerunButton.addEventListener('click', async () => {
+				if (!this.createRegionCommands || !this.settings || !this.regionService) {
+					new Notice('Cannot re-run: Required services not available');
+					return;
+				}
+
+				// Disable rerun for semantic similarity regions when using OpenAI (ChatGPT)
+				if (this.usesSemanticSimilarity() && this.settings.aiMode === 'openai') {
+					new Notice('Re-running semantic similarity analysis regions is not supported when using OpenAI');
+					return;
+				}
+
+				// Get new threshold from input
+				const newThreshold = parseFloat(thresholdInput.value);
+				if (isNaN(newThreshold) || newThreshold < 0 || newThreshold > 1) {
+					new Notice('Threshold must be between 0 and 1');
+					return;
+				}
+
+				// Get new semantic mode from dropdown (only for semantic similarity regions)
+				let newSemanticMode: 'walkabout' | 'hopscotch' | 'rolling-path' | 'crowd' | undefined;
+				if (this.usesSemanticSimilarity() && modeSelect) {
+					newSemanticMode = modeSelect.value as 'walkabout' | 'hopscotch' | 'rolling-path' | 'crowd';
+					if (!['walkabout', 'hopscotch', 'rolling-path', 'crowd'].includes(newSemanticMode)) {
+						new Notice('Invalid semantic mode selected');
+						return;
+					}
+				}
+
+				// Get original values for fallback
+				const originalThreshold = this.region.similarityThreshold ?? this.settings.embeddingSimilarityThreshold ?? 0.65;
+				const originalSemanticMode = this.region.source.processingInfo?.semanticSimilarityMode || 'walkabout';
+				
+				// Temporarily update settings with new threshold
+				const originalSettingsThreshold = this.settings.embeddingSimilarityThreshold;
+				this.settings.embeddingSimilarityThreshold = newThreshold;
+				this.createRegionCommands.updateSettings(this.settings);
+				
+				try {
+					// Store old region info to reuse
+					const oldName = this.region.name;
+					const oldColor = this.region.color;
+					const oldRegionId = this.region.id;
+					
+					// Determine which method to call based on region mode
+					let notesFound = false;
+					if (this.region.mode === 'concept') {
+						const info = this.region.source.processingInfo;
+						if (info?.conceptText && !info.initialTags && !info.refinedTags) {
+							// Semantic similarity mode - re-run with concept text
+							const conceptText = info.conceptText;
+							
+							// Re-run semantic similarity with new threshold and mode
+							new Notice(`Re-running with threshold ${newThreshold.toFixed(2)} and mode ${newSemanticMode}...`);
+							notesFound = await this.createRegionCommands.createRegionFromSemanticSimilarityWithParams(
+								conceptText,
+								oldName,
+								oldColor,
+								newSemanticMode
+							);
+							
+							if (notesFound) {
+								// Delete old region
+								this.regionService.deleteRegion(oldRegionId);
+							}
+						} else if (this.region.source.concepts) {
+							// Concept/tag analysis mode - re-run with concepts and new threshold
+							// Note: Re-running concept/tag analysis with new threshold requires recreating the region
+							// For now, we'll use the existing threshold from the region
+							new Notice('Re-running concept/tag analysis with a new threshold is not yet fully supported. Please create a new region.');
+							notesFound = false;
+						}
+					} else if (this.region.mode === 'search') {
+						// Search + AI Analysis mode - re-run with new threshold only (no mode selection)
+						const query = this.region.source.query;
+						
+						if (query) {
+							// Re-run search with AI analysis using new threshold
+							new Notice(`Re-running with threshold ${newThreshold.toFixed(2)}...`);
+							notesFound = await this.createRegionCommands.createRegionFromSearchWithAIAnalysisWithParams(
+								query,
+								oldName,
+								oldColor,
+								newThreshold
+							);
+							
+							if (notesFound) {
+								// Delete old region
+								this.regionService.deleteRegion(oldRegionId);
+							}
+						} else {
+							new Notice('Cannot re-run: Search query not available');
+						}
+					}
+					
+					if (!notesFound) {
+						// No notes found with new values, keep old region and restore values
+						new Notice(`No notes found with threshold ${newThreshold.toFixed(2)} and mode ${newSemanticMode}. Keeping original region with threshold ${originalThreshold.toFixed(2)} and mode ${originalSemanticMode}.`);
+						this.settings.embeddingSimilarityThreshold = originalSettingsThreshold;
+						this.createRegionCommands.updateSettings(this.settings);
+					} else {
+						// Notes found, update threshold and mode in the new region
+						const newRegion = this.regionService.getRegions().find(r => r.name === oldName && r.color === oldColor);
+						if (newRegion) {
+							// Update processingInfo to reflect new threshold and mode
+							if (newRegion.source.processingInfo) {
+								newRegion.source.processingInfo.similarityThreshold = newThreshold;
+								newRegion.source.processingInfo.semanticSimilarityMode = newSemanticMode;
+								this.regionService.updateRegion(newRegion.id, {
+									similarityThreshold: newThreshold,
+									source: newRegion.source
+								});
+							} else {
+								this.regionService.updateRegion(newRegion.id, {
+									similarityThreshold: newThreshold
+								});
+							}
+							
+							// Update the local region reference to reflect changes
+							this.region = newRegion;
+						}
+						// Restore original settings threshold
+						this.settings.embeddingSimilarityThreshold = originalSettingsThreshold;
+						this.createRegionCommands.updateSettings(this.settings);
+						
+						// Close modal and trigger update
+						this.close();
+						if (this.onUpdate) {
+							await this.onUpdate();
+						}
+					}
+				} catch (error) {
+					// Restore original threshold on error
+					this.settings.embeddingSimilarityThreshold = originalSettingsThreshold;
+					this.createRegionCommands.updateSettings(this.settings);
+					console.error('[Thoughtlands] Error re-running region:', error);
+					new Notice(`Error re-running region: ${error instanceof Error ? error.message : 'Unknown error'}`);
+				}
+			});
+		}
 		// Show canvas information
 		let canvases = this.region.canvases || [];
+		
 		// Backward compatibility: if canvasPath exists but no canvases array, create one
 		if (this.region.canvasPath && canvases.length === 0) {
 			canvases.push({
@@ -101,6 +425,69 @@ export class RegionInfoModal extends Modal {
 			};
 			
 			canvasHeader.addEventListener('click', toggleCanvasList);
+			
+			// Check for missing files and add notice/button inside the collapsible list, above the canvas items
+			const missingCanvases = canvases.filter(canvas => {
+				const canvasFile = this.app.vault.getAbstractFileByPath(canvas.path);
+				return !(canvasFile instanceof TFile);
+			});
+			
+			if (missingCanvases.length > 0 && this.regionService) {
+				const missingFilesSection = canvasList.createDiv({ 
+					attr: { style: 'margin-bottom: 10px; padding: 10px; background: var(--background-modifier-form-field-highlighted); border-radius: 4px;' } 
+				});
+				
+				missingFilesSection.createEl('div', {
+					text: `${missingCanvases.length} missing file${missingCanvases.length > 1 ? 's' : ''} found`,
+					attr: { style: 'font-weight: 500; margin-bottom: 8px;' }
+				});
+				
+				const removeAllButton = missingFilesSection.createEl('button', {
+					text: 'Remove All Missing Files',
+					attr: {
+						style: 'padding: 6px 12px; font-size: 0.9em;'
+					}
+				});
+				
+				removeAllButton.addEventListener('click', async () => {
+					if (confirm(`Remove all ${missingCanvases.length} missing file${missingCanvases.length > 1 ? 's' : ''} from this region's canvas list?`)) {
+						if (!this.regionService) return;
+						
+						// Remove all missing canvases
+						const updatedCanvases = canvases.filter(canvas => {
+							const canvasFile = this.app.vault.getAbstractFileByPath(canvas.path);
+							return canvasFile instanceof TFile;
+						});
+						
+						// Clear canvasPath if it's missing
+						const canvasPathFile = this.region.canvasPath 
+							? this.app.vault.getAbstractFileByPath(this.region.canvasPath)
+							: null;
+						const updatedCanvasPath = (canvasPathFile instanceof TFile) ? this.region.canvasPath : undefined;
+						
+						this.regionService.updateRegion(this.region.id, {
+							canvases: updatedCanvases,
+							canvasPath: updatedCanvasPath
+						});
+						
+						// Update the region reference
+						this.region.canvases = updatedCanvases;
+						if (updatedCanvasPath === undefined) {
+							delete this.region.canvasPath;
+						}
+						
+						// Trigger update callback if provided
+						if (this.onUpdate) {
+							this.onUpdate();
+						}
+						
+						// Re-render the modal
+						this.onOpen();
+						
+						new Notice(`Removed ${missingCanvases.length} missing file${missingCanvases.length > 1 ? 's' : ''} from region`);
+					}
+				});
+			}
 			
 			canvases.forEach((canvas, index) => {
 				const canvasItem = canvasList.createDiv({ attr: { style: 'margin: 5px 0; padding: 5px; background: var(--background-primary); border-radius: 3px; display: flex; align-items: center; justify-content: space-between;' } });
@@ -275,7 +662,17 @@ export class RegionInfoModal extends Modal {
 					if (info.similarNotesFound !== undefined) {
 						const threshold = info.similarityThreshold ?? 0.7;
 						narrativeText.push(`Semantic similarity analysis was performed across all notes in the vault using a similarity threshold of ${threshold}.`);
-						narrativeText.push(`${info.similarNotesFound} note${info.similarNotesFound !== 1 ? 's were' : ' was'} found with semantic similarity above the threshold and added to the region.`);
+						
+						const semanticMode = info.semanticSimilarityMode || 'walkabout';
+						const modeDescriptions: Record<string, string> = {
+							'walkabout': 'All semantically similar notes were selected. When added to a canvas, they will be arranged around the concept with distance reflecting similarity. Notes with similar meanings will be clustered together.',
+							'hopscotch': 'A path of notes was selected starting with the concept, then the most semantically similar note, then the note most similar to that, and so on. When added to a canvas, this creates a connected chain of related ideas from left to right.',
+							'rolling-path': 'A path of notes was selected that aggregates all notes at each step, finding the note most similar to the entire aggregation next. When added to a canvas, this builds a comprehensive exploration of related concepts from left to right.',
+							'crowd': 'All semantically similar notes were selected. When added to a canvas, they will be placed in a grid layout with no particular arrangement or clustering.'
+						};
+						
+						const modeDescription = modeDescriptions[semanticMode] || modeDescriptions['walkabout'];
+						narrativeText.push(`${info.similarNotesFound} note${info.similarNotesFound !== 1 ? 's were' : ' was'} found with semantic similarity above the threshold. ${modeDescription}`);
 					}
 				} else {
 					// Tag-based concept analysis narrative (existing logic)
@@ -504,8 +901,56 @@ export class RegionInfoModal extends Modal {
 			});
 		}
 
+		// Action buttons
+		const buttonContainer = contentEl.createDiv({ attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-top: 20px; gap: 10px;' } });
+		
+		const leftButtons = buttonContainer.createDiv({ attr: { style: 'display: flex; gap: 10px;' } });
+		
+		// Archive/Unarchive button
+		if (this.region.archived) {
+			const unarchiveButton = leftButtons.createEl('button', { text: 'Unarchive' });
+			unarchiveButton.addEventListener('click', () => {
+				if (this.regionService) {
+					this.regionService.unarchiveRegion(this.region.id);
+					if (this.onUpdate) {
+						this.onUpdate();
+					}
+					this.close();
+				}
+			});
+		} else {
+			const archiveButton = leftButtons.createEl('button', { text: 'Archive' });
+			archiveButton.addEventListener('click', () => {
+				if (confirm(`Archive region "${this.region.name}"?`)) {
+					if (this.regionService) {
+						this.regionService.archiveRegion(this.region.id);
+						if (this.onUpdate) {
+							this.onUpdate();
+						}
+						this.close();
+					}
+				}
+			});
+		}
+		
+		// Delete button
+		const deleteButton = leftButtons.createEl('button', { 
+			text: 'Delete',
+			attr: { style: 'color: var(--text-error);' }
+		});
+		deleteButton.addEventListener('click', () => {
+			if (confirm(`Delete region "${this.region.name}"? This cannot be undone.`)) {
+				if (this.regionService) {
+					this.regionService.deleteRegion(this.region.id);
+					if (this.onUpdate) {
+						this.onUpdate();
+					}
+					this.close();
+				}
+			}
+		});
+		
 		// Close button
-		const buttonContainer = contentEl.createDiv({ attr: { style: 'text-align: right; margin-top: 20px;' } });
 		const closeButton = buttonContainer.createEl('button', { text: 'Close' });
 		closeButton.addEventListener('click', () => this.close());
 	}

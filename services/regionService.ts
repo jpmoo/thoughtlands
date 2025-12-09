@@ -66,6 +66,24 @@ export class RegionService {
 		return this.regions.find(r => r.id === id) || null;
 	}
 
+	archiveRegion(id: string): boolean {
+		const region = this.regions.find(r => r.id === id);
+		if (!region) return false;
+		
+		region.archived = true;
+		region.updatedAt = new Date().toISOString();
+		return true;
+	}
+
+	unarchiveRegion(id: string): boolean {
+		const region = this.regions.find(r => r.id === id);
+		if (!region) return false;
+		
+		region.archived = false;
+		region.updatedAt = new Date().toISOString();
+		return true;
+	}
+
 	filterNotesByIgnores(files: TFile[], metadataCache?: any, noteService?: any): TFile[] {
 		const filtered = files.filter(file => {
 			const filePath = file.path.toLowerCase();

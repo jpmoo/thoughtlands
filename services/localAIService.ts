@@ -222,7 +222,7 @@ export class LocalAIService {
 				
 				if (validatedTags.length < tags.length) {
 					console.warn(`[Thoughtlands:LocalAI] Filtered out ${tags.length - validatedTags.length} invalid tags from AI response`);
-				}
+			}
 				tags = validatedTags;
 			} else {
 			tags = tags.slice(0, maxTags);
@@ -387,7 +387,7 @@ export class LocalAIService {
 				
 				if (validatedTags.length < filteredTags.length) {
 					console.warn(`[Thoughtlands:LocalAI] Filtered out ${filteredTags.length - validatedTags.length} invalid tags from AI refinement`);
-				}
+			}
 				filteredTags = validatedTags;
 			} else {
 			filteredTags = filteredTags.slice(0, maxTags);

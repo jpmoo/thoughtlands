@@ -29,8 +29,9 @@ export default class ThoughtlandsPlugin extends Plugin {
 	tagAffinityCache: TagAffinityCache;
 	jsonExportService: JSONExportService;
 	createRegionCommands: CreateRegionCommands;
-	private embeddingQueue: TFile[] = [];
+	private embeddingQueue: Array<{ file: TFile; isNew: boolean }> = [];
 	private isProcessingEmbeddingQueue: boolean = false;
+	private filesCurrentlyProcessing: Set<string> = new Set(); // Track files being processed to prevent duplicates
 	private isInitialized: boolean = false;
 	private regionCreationStatus: RegionCreationStatus = { isCreating: false };
 	private regionCreationStatusCallbacks: Set<() => void> = new Set();
@@ -48,7 +49,7 @@ export default class ThoughtlandsPlugin extends Plugin {
 		this.localAIService = new LocalAIService(this.app, this.settings);
 		// Pass plugin instance to EmbeddingService so it can use loadData/saveData
 		this.embeddingService = new EmbeddingService(this.app, this.settings, this);
-		this.canvasService = new CanvasService(this.app, this.embeddingService);
+		this.canvasService = new CanvasService(this.app, this.embeddingService, this.localAIService, this.settings, this);
 		this.jsonExportService = new JSONExportService(this.app, this.regionService);
 		this.createRegionCommands = new CreateRegionCommands(
 			this.app,
@@ -282,14 +283,14 @@ export default class ThoughtlandsPlugin extends Plugin {
 
 		// Create Region from Search Results + AI Analysis (only if local model is active)
 		if (this.settings.aiMode === 'local') {
-			this.addCommand({
+		this.addCommand({
 				id: 'create-region-from-search-ai-analysis',
 				name: 'Create Region from Search Results + AI Analysis',
-				callback: async () => {
+			callback: async () => {
 					await this.createRegionCommands.createRegionFromSearchWithAIAnalysis();
-					await this.onRegionUpdate();
-				},
-			});
+				await this.onRegionUpdate();
+			},
+		});
 		}
 
 		// Generate Initial Embeddings
@@ -464,15 +465,42 @@ export default class ThoughtlandsPlugin extends Plugin {
 			return; // Silent skip if embeddings not complete
 		}
 
-		// Add to queue if not already queued
-		if (!this.embeddingQueue.some((f: TFile) => f.path === file.path)) {
-			this.embeddingQueue.push(file);
+		// Skip if file is currently being processed
+		if (this.filesCurrentlyProcessing.has(file.path)) {
+			console.log(`[Thoughtlands] Skipping ${file.path} - already being processed`);
+			return;
+		}
+
+		// Check if file already has a current embedding (before queuing)
+		// This prevents unnecessary queueing
+		this.embeddingService.getStorageService().hasEmbedding(file).then(hasEmbedding => {
+			if (hasEmbedding) {
+				// File already has embedding, no need to queue
+				return;
+			}
+
+			// Add to queue if not already queued (check both queue and currently processing)
+			const alreadyQueued = this.embeddingQueue.some((item) => item.file.path === file.path);
+			if (!alreadyQueued && !this.filesCurrentlyProcessing.has(file.path)) {
+				this.embeddingQueue.push({ file, isNew });
 		}
 		
 		// Start processing queue if not already processing
 		if (!this.isProcessingEmbeddingQueue) {
 			this.processEmbeddingQueue();
 		}
+		}).catch(error => {
+			console.warn(`[Thoughtlands] Error checking embedding for ${file.path}:`, error);
+			// On error, still queue it (safer to process than skip)
+			const alreadyQueued = this.embeddingQueue.some((item) => item.file.path === file.path);
+			if (!alreadyQueued && !this.filesCurrentlyProcessing.has(file.path)) {
+				this.embeddingQueue.push({ file, isNew });
+			}
+			
+			if (!this.isProcessingEmbeddingQueue) {
+				this.processEmbeddingQueue();
+			}
+		});
 	}
 
 	private async processEmbeddingQueue(): Promise<void> {
@@ -483,16 +511,27 @@ export default class ThoughtlandsPlugin extends Plugin {
 		this.isProcessingEmbeddingQueue = true;
 		
 		while (this.embeddingQueue.length > 0) {
-			const file = this.embeddingQueue.shift();
-			if (!file) break;
+			const item = this.embeddingQueue.shift();
+			if (!item) break;
 			
-			// Determine if it's new (check if it was just created)
-			const isNew = true; // We'll track this better if needed, but for now assume new
+			const { file, isNew } = item;
+			
+			// Skip if file is already being processed (double-check)
+			if (this.filesCurrentlyProcessing.has(file.path)) {
+				console.log(`[Thoughtlands] Skipping ${file.path} - already being processed (duplicate in queue)`);
+				continue;
+			}
+			
+			// Mark as currently processing
+			this.filesCurrentlyProcessing.add(file.path);
 			
 			try {
 				await this.updateEmbeddingForFile(file, isNew);
 			} catch (error) {
 				console.error(`[Thoughtlands] Error processing ${file.path} from queue:`, error);
+			} finally {
+				// Always remove from currently processing set
+				this.filesCurrentlyProcessing.delete(file.path);
 			}
 			
 			// Small delay between files to avoid overwhelming Ollama
@@ -507,6 +546,12 @@ export default class ThoughtlandsPlugin extends Plugin {
 	async updateEmbeddingForFile(file: TFile, isNew: boolean = false): Promise<void> {
 		// Only update if embeddings are complete (initial build done)
 		if (!this.embeddingService.isEmbeddingProcessComplete()) {
+			return;
+		}
+
+		// Double-check that file isn't being processed (defense in depth)
+		if (this.filesCurrentlyProcessing.has(file.path)) {
+			console.log(`[Thoughtlands] Skipping ${file.path} - already being processed`);
 			return;
 		}
 

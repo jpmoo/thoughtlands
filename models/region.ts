@@ -22,6 +22,8 @@ export function getModeDisplayName(mode: RegionMode, region?: Region): string {
 	}
 }
 
+export type SemanticSimilarityMode = 'walkabout' | 'hopscotch' | 'rolling-path' | 'crowd';
+
 export interface ConceptProcessingInfo {
 	initialTags?: string[]; // Tags from first AI prompt (validated)
 	refinedTags?: string[]; // Tags after second pass with note excerpts (validated)
@@ -39,6 +41,7 @@ export interface ConceptProcessingInfo {
 	similarNotesFound?: number; // Number of similar notes found via embedding analysis
 	// Semantic Similarity Analysis specific fields
 	conceptText?: string; // The concept text used for semantic similarity analysis
+	semanticSimilarityMode?: SemanticSimilarityMode; // Output mode for semantic similarity arrangement
 }
 
 export interface RegionSource {
@@ -67,6 +70,8 @@ export interface Region {
 	notes: string[];
 	canvasPath?: string; // Deprecated: kept for backward compatibility
 	canvases?: CanvasEntry[]; // Array of canvas entries with timestamps
+	similarityThreshold?: number; // Region-specific similarity threshold (overrides global setting)
+	archived?: boolean; // Whether the region is archived
 }
 
 export interface RegionsData {

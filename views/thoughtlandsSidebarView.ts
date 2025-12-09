@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, Notice, Plugin } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, Plugin, TFile } from 'obsidian';
 import { Region, getModeDisplayName } from '../models/region';
 import { RegionService } from '../services/regionService';
 import { CreateRegionCommands } from '../commands/createRegionCommands';
@@ -20,6 +20,7 @@ export class ThoughtlandsSidebarView extends ItemView {
 	private onRegionUpdate: () => void;
 	private progressUnsubscribe?: () => void;
 	private regionStatusUnsubscribe?: () => void;
+	private showArchived: boolean = false;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -228,17 +229,17 @@ export class ThoughtlandsSidebarView extends ItemView {
 		});
 
 		const buttonsContainer = actionsSection.createDiv({ 
-			attr: { style: 'display: flex; flex-direction: column; gap: 8px;' } 
+			attr: { style: 'display: flex; flex-direction: row; gap: 8px; flex-wrap: wrap;' } 
 		});
 
 		// Button 1: Create Region from Search Results
 		const searchButton = buttonsContainer.createEl('button', { 
-			text: 'From Search Results',
 			attr: { 
-				style: 'width: 100%; padding: 8px; text-align: left;',
-				title: 'Enter search terms to find matching notes and create a region.'
+				style: 'flex: 1; min-width: 25%; padding: 8px; display: flex; align-items: center; justify-content: center;',
+				title: 'From Search Results: Feed terms into Obsidian\'s search to create a region from matching notes.'
 			}
 		});
+		searchButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>';
 		searchButton.addEventListener('click', async () => {
 			await this.createRegionCommands.createRegionFromSearch();
 			await this.onRegionUpdate();
@@ -276,12 +277,12 @@ export class ThoughtlandsSidebarView extends ItemView {
 			// Only show button if embeddings are complete AND not processing
 			if (embeddingsComplete2 && !isProcessing2) {
 				const searchAIAnalysisButton = buttonsContainer.createEl('button', { 
-					text: 'From Search Results + AI Analysis',
 					attr: { 
-						style: 'width: 100%; padding: 8px; text-align: left;',
-						title: 'Enter search terms to find matching notes, then use AI to examine results and find other related notes.'
+						style: 'flex: 1; min-width: 25%; padding: 8px; display: flex; align-items: center; justify-content: center;',
+						title: 'From Search Results + AI Analysis: Feed terms into Obsidian\'s search, then use AI to examine results and find other related notes utilizing semantic similarity analysis.'
 					}
 				});
+				searchAIAnalysisButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path><path d="M11 8v6"></path><path d="M8 11h6"></path></svg>';
 				searchAIAnalysisButton.addEventListener('click', async () => {
 					await this.createRegionCommands.createRegionFromSearchWithAIAnalysis();
 					await this.onRegionUpdate();
@@ -290,9 +291,11 @@ export class ThoughtlandsSidebarView extends ItemView {
 			}
 		}
 
-		// Button 3: Create Region from AI Concept Search (show if OpenAI key or local mode enabled)
-		const showAIButton = (this.settings.aiMode === 'openai' && this.settings.openAIApiKey && this.settings.openAIApiKey.trim().length > 0) ||
-		                     (this.settings.aiMode === 'local');
+		// Button 3: Create Region from AI Concept Search
+		// Show for OpenAI mode (always available, but with limited scope - no embedding filtering)
+		// Show for local mode only if embeddings are complete
+		const isOpenAIMode = this.settings.aiMode === 'openai';
+		const hasOpenAIKey = isOpenAIMode && this.settings.openAIApiKey && this.settings.openAIApiKey.trim().length > 0;
 		
 		// Check if embeddings are complete and not processing for local mode
 		// Access embeddingService through the plugin instance
@@ -324,26 +327,31 @@ export class ThoughtlandsSidebarView extends ItemView {
 			}
 		}
 		
-		// Only show AI button if embeddings are complete AND not processing (or if OpenAI mode)
-		if (showAIButton && (this.settings.aiMode === 'openai' || (embeddingsComplete && !isProcessing))) {
-			let tooltipText = `Use ${this.settings.aiMode === 'local' ? 'local model' : 'AI'} to gather notes that have tags relevant to certain concepts that you provide.`;
+		// Show AI button for OpenAI mode (always) or for local mode (if embeddings complete)
+		const showAIButton = isOpenAIMode || (this.settings.aiMode === 'local' && embeddingsComplete && !isProcessing);
+		
+		if (showAIButton) {
+			let tooltipText = `From AI-Assisted Concept/Tag Analysis: Use ${this.settings.aiMode === 'local' ? 'local model' : 'AI'} to gather notes that have tags relevant to certain concepts that you provide.`;
 			if (this.settings.aiMode === 'local') {
 				tooltipText += ' Refine the selection with semantic similarity analysis.';
+			} else if (isOpenAIMode && !hasOpenAIKey) {
+				tooltipText += ' (OpenAI API key required in settings.)';
+			} else if (isOpenAIMode) {
+				tooltipText += ' (Limited to tag analysis on OpenAI.)';
 			}
 			
 			const conceptButton = buttonsContainer.createEl('button', { 
-				text: 'From AI-Assisted Concept/Tag Analysis',
 				attr: { 
-					style: 'width: 100%; padding: 8px; text-align: left;',
+					style: 'flex: 1; min-width: 25%; padding: 8px; display: flex; align-items: center; justify-content: center;',
 					title: tooltipText
 				}
 			});
-			
-				conceptButton.addEventListener('click', async () => {
-					await this.createRegionCommands.createRegionFromConcept();
-					await this.onRegionUpdate();
-					this.render();
-				});
+			conceptButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"></path><circle cx="12" cy="12" r="4"></circle></svg>';
+			conceptButton.addEventListener('click', async () => {
+				await this.createRegionCommands.createRegionFromConcept();
+				await this.onRegionUpdate();
+				this.render();
+			});
 		}
 
 		// Button 4: Create Region from Semantic Similarity Analysis (only if local mode enabled and embeddings are complete)
@@ -377,13 +385,12 @@ export class ThoughtlandsSidebarView extends ItemView {
 			// Only show semantic similarity button if embeddings are complete AND not processing
 			if (embeddingsComplete3 && !isProcessing3) {
 				const semanticButton = buttonsContainer.createEl('button', { 
-					text: 'From Semantic Similarity Analysis',
 					attr: { 
-						style: 'width: 100%; padding: 8px; text-align: left;',
-						title: 'Examine the semantic similarilty between descriptive text you enter and the notes in your vault. Returns up to 100 notes. To be more selective, increase the embedding similarity threshold in settings.'
+						style: 'flex: 1; min-width: 25%; padding: 8px; display: flex; align-items: center; justify-content: center;',
+						title: 'From Semantic Similarity Analysis: Examine the semantic similarity between descriptive text you enter and the notes in your vault. Returns up to 100 notes for walkabout and crown, and up to 50 notes for path representations. To be more selective, increase the embedding similarity.'
 					}
 				});
-				
+				semanticButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>';
 				semanticButton.addEventListener('click', async () => {
 					await this.createRegionCommands.createRegionFromSemanticSimilarity();
 					await this.onRegionUpdate();
@@ -402,12 +409,12 @@ export class ThoughtlandsSidebarView extends ItemView {
 				if (!isComplete && !isProcessing) {
 					// Show generate button below the options
 					const generateButton = buttonsContainer.createEl('button', { 
-						text: 'Generate Initial Embeddings',
 						attr: { 
-							style: 'width: 100%; padding: 10px; text-align: center; font-weight: bold; margin-top: 10px;',
-							title: 'Start the embedding generation process for all notes in your vault'
+							style: 'width: 100%; padding: 10px; display: flex; align-items: center; justify-content: center; font-weight: bold; margin-top: 10px;',
+							title: 'Generate Initial Embeddings: Start the embedding generation process for all notes in your vault.'
 						}
 					});
+					generateButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>';
 					
 					generateButton.addEventListener('click', async () => {
 						// Access the plugin's generateInitialEmbeddings method
@@ -435,6 +442,33 @@ export class ThoughtlandsSidebarView extends ItemView {
 				}
 			}
 		}
+
+		// View toggle: Active vs Archived
+		const viewToggle = containerEl.createDiv({ 
+			attr: { style: 'padding: 10px; border-bottom: 1px solid var(--background-modifier-border); display: flex; gap: 10px; align-items: center;' } 
+		});
+		
+		const activeButton = viewToggle.createEl('button', {
+			text: 'Active',
+			attr: {
+				style: `padding: 6px 12px; flex: 1; ${!this.showArchived ? 'background: var(--interactive-accent); color: var(--text-on-accent);' : ''}`
+			}
+		});
+		activeButton.addEventListener('click', () => {
+			this.showArchived = false;
+			this.render();
+		});
+		
+		const archivedButton = viewToggle.createEl('button', {
+			text: 'Archived',
+			attr: {
+				style: `padding: 6px 12px; flex: 1; ${this.showArchived ? 'background: var(--interactive-accent); color: var(--text-on-accent);' : ''}`
+			}
+		});
+		archivedButton.addEventListener('click', () => {
+			this.showArchived = true;
+			this.render();
+		});
 
 		// Check if region creation is in progress
 		const plugin = this.plugin as any;
@@ -468,8 +502,22 @@ export class ThoughtlandsSidebarView extends ItemView {
 				document.head.appendChild(style);
 			}
 			
+			// Determine header text based on the step
+			// The step "Generating canvas..." should trigger "Creating Canvas..."
+			let headerText = 'Creating Region...';
+			if (creationStatus.step) {
+				const stepText = creationStatus.step.toLowerCase();
+				// Check for canvas-related keywords - "Generating canvas..." contains "canvas"
+				if (stepText.includes('canvas') || 
+				    stepText.includes('semantic') ||
+				    stepText.includes('cluster') || 
+				    stepText.includes('path summary')) {
+					headerText = 'Creating Canvas...';
+				}
+			}
+			
 			loadingHeader.createEl('strong', { 
-				text: 'Creating Region...',
+				text: headerText,
 				attr: { style: 'color: var(--text-accent);' }
 			});
 			
@@ -488,7 +536,22 @@ export class ThoughtlandsSidebarView extends ItemView {
 			}
 		}
 
-		const regions = this.regionService.getRegions();
+		// Filter and sort regions based on archived status
+		let regions = this.regionService.getRegions();
+		
+		// Filter by archived status
+		if (this.showArchived) {
+			regions = regions.filter(r => r.archived === true);
+		} else {
+			regions = regions.filter(r => !r.archived);
+		}
+		
+		// Sort by updatedAt descending (most recent first)
+		regions = regions.sort((a, b) => {
+			const dateA = new Date(a.updatedAt || a.createdAt || 0).getTime();
+			const dateB = new Date(b.updatedAt || b.createdAt || 0).getTime();
+			return dateB - dateA;
+		});
 
 		if (regions.length === 0 && !creationStatus.isCreating) {
 			const emptyState = containerEl.createDiv({ 
@@ -525,25 +588,84 @@ export class ThoughtlandsSidebarView extends ItemView {
 			header.createEl('strong', { text: region.name });
 
 			// Region info
-			const info = regionCard.createDiv({ attr: { style: 'font-size: 0.9em; color: var(--text-muted); margin-bottom: 8px;' } });
-			info.createEl('span', { text: `Mode: ${getModeDisplayName(region.mode, region)} • ` });
+			const info = regionCard.createDiv({ attr: { style: 'font-size: 0.8em; color: var(--text-muted); margin-bottom: 8px;' } });
+			info.createEl('span', { text: `${getModeDisplayName(region.mode, region)} • ` });
+			
+			// Show semantic similarity mode if it exists (only for local model regions with semantic similarity)
+			const semanticMode = region.source.processingInfo?.semanticSimilarityMode;
+			if (semanticMode && region.source.aiMode === 'local') {
+				const modeDisplayNames: Record<string, string> = {
+					'walkabout': 'Walkabout',
+					'hopscotch': 'Hopscotch',
+					'rolling-path': 'Rolling Path',
+					'crowd': 'Crowd'
+				};
+				const modeDisplayName = modeDisplayNames[semanticMode] || semanticMode;
+				info.createEl('span', { text: `${modeDisplayName} • ` });
+			}
+			
 			info.createEl('span', { text: `${region.notes.length} notes` });
 
 			// Action buttons
 			const actions = regionCard.createDiv({ attr: { style: 'display: flex; gap: 5px; margin-top: 8px; flex-wrap: wrap;' } });
 			
-			const infoButton = actions.createEl('button', { text: 'Info', attr: { style: 'flex: 1; min-width: 80px;' } });
+			const infoButton = actions.createEl('button', { 
+				attr: { 
+					style: 'padding: 6px 10px; display: flex; align-items: center; justify-content: center;',
+					title: 'Info: View detailed information about this region, make changes, and re-run.'
+				}
+			});
+			infoButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>';
 			infoButton.addEventListener('click', () => this.showRegionInfo(region));
 
-			const renameButton = actions.createEl('button', { text: 'Rename', attr: { style: 'flex: 1; min-width: 80px;' } });
+			const renameButton = actions.createEl('button', { 
+				attr: { 
+					style: 'padding: 6px 10px; display: flex; align-items: center; justify-content: center;',
+					title: 'Rename: Change the name of this region'
+				}
+			});
+			renameButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>';
 			renameButton.addEventListener('click', () => this.renameRegion(region));
 
-			const deleteButton = actions.createEl('button', { text: 'Delete', attr: { style: 'flex: 1; min-width: 80px;' } });
-			deleteButton.addEventListener('click', () => this.deleteRegion(region));
-
 			const hasCanvases = (region.canvases && region.canvases.length > 0) || region.canvasPath;
-			const canvasButtonText = hasCanvases ? 'Add Canvas' : 'Add to Canvas';
-			const canvasButton = actions.createEl('button', { text: canvasButtonText, attr: { style: 'flex: 1; min-width: 80px;' } });
+			const canvasButtonTitle = hasCanvases ? 'Add Canvas: Add this region to another canvas.' : 'Add Canvas: Create a canvas using this region and mode.';
+			const canvasButton = actions.createEl('button', { 
+				attr: { 
+					style: 'padding: 6px 10px; display: flex; align-items: center; justify-content: center;',
+					title: canvasButtonTitle
+				}
+			});
+
+			// Archive/Unarchive button
+			if (this.showArchived) {
+				const unarchiveButton = actions.createEl('button', { 
+					attr: { 
+						style: 'padding: 6px 10px; display: flex; align-items: center; justify-content: center;',
+						title: 'Unarchive: Restore this region to active view'
+					}
+				});
+				unarchiveButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>';
+				unarchiveButton.addEventListener('click', () => this.unarchiveRegion(region));
+			} else {
+				const archiveButton = actions.createEl('button', { 
+					attr: { 
+						style: 'padding: 6px 10px; display: flex; align-items: center; justify-content: center;',
+						title: 'Archive: Move this region to archived view'
+					}
+				});
+				archiveButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>';
+				archiveButton.addEventListener('click', () => this.archiveRegion(region));
+			}
+			
+			const deleteButton = actions.createEl('button', { 
+				attr: { 
+					style: 'padding: 6px 10px; display: flex; align-items: center; justify-content: center;',
+					title: 'Delete: Remove this region'
+				}
+			});
+			deleteButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>';
+			deleteButton.addEventListener('click', () => this.deleteRegion(region));
+			canvasButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect></svg>';
 			canvasButton.addEventListener('click', () => this.addToCanvas(region));
 		});
 	}
@@ -568,6 +690,20 @@ export class ThoughtlandsSidebarView extends ItemView {
 		}
 	}
 
+	private async archiveRegion(region: Region) {
+		if (confirm(`Archive region "${region.name}"?`)) {
+			this.regionService.archiveRegion(region.id);
+			this.onRegionUpdate();
+			this.render();
+		}
+	}
+
+	private async unarchiveRegion(region: Region) {
+		this.regionService.unarchiveRegion(region.id);
+		this.onRegionUpdate();
+		this.render();
+	}
+
 	private async deleteRegion(region: Region) {
 		if (confirm(`Delete region "${region.name}"?`)) {
 			this.regionService.deleteRegion(region.id);
@@ -579,46 +715,41 @@ export class ThoughtlandsSidebarView extends ItemView {
 	private async addToCanvas(region: Region) {
 		let isNewCanvas = false;
 		
-		// Check if semantic similarity arrangement is available
-		// Only available if local AI is enabled and embeddings are complete
-		let canArrangeBySimilarity = false;
-		if (this.settings.aiMode === 'local') {
-			const embeddingService = (this.plugin as any).embeddingService;
-			if (embeddingService) {
-				const isComplete = embeddingService.isEmbeddingProcessComplete();
-				const isProcessing = embeddingService.isEmbeddingProcessInProgress();
-				canArrangeBySimilarity = isComplete && !isProcessing;
-			}
+		// Extract default text from region
+		let defaultText = '';
+		if (region.source.query) {
+			defaultText = region.source.query;
+		} else if (region.source.concepts && region.source.concepts.length > 0) {
+			defaultText = region.source.concepts.join(', ');
+		} else if (region.source.processingInfo?.conceptText) {
+			defaultText = region.source.processingInfo.conceptText;
 		}
+		
+		// Get default colors from settings, with Obsidian canvas palette colors as fallback
+		// Obsidian canvas supports palette colors '1'-'6' and hex colors '#RRGGBB'
+		const defaultColors = this.settings.defaultColors && this.settings.defaultColors.length > 0
+			? this.settings.defaultColors
+			: ['#E67E22', '#3498DB', '#2ECC71', '#9B59B6', '#E74C3C', '#F39C12', '#1ABC9C', '#95A5A6'];
+		
+		// Check if region uses walkabout mode (semantic similarity)
+		const semanticMode = region.source.processingInfo?.semanticSimilarityMode;
+		const isWalkabout = semanticMode === 'walkabout';
 		
 		const modal = new CanvasSelectModal(
 			this.app,
 			this.canvasService,
-			async (canvasFile: any, wasNew: boolean, drawConnections: boolean, createCard: boolean, arrangeBySimilarity: boolean) => {
+			async (canvasFile: TFile | null, wasNew: boolean, drawConnections: boolean, cardInput?: { text: string; color: string; clustering?: number; crowdLayout?: 'regiment' | 'gaggle' } | null) => {
 				if (canvasFile) {
 					isNewCanvas = wasNew;
 					
-					// If card creation is requested, prompt for card text and color
-					let card: { text: string; color: string } | undefined = undefined;
-					if (createCard) {
-						// Extract default text from region
-						let defaultText = '';
-						if (region.source.query) {
-							defaultText = region.source.query;
-						} else if (region.source.concepts && region.source.concepts.length > 0) {
-							defaultText = region.source.concepts.join(', ');
-						} else if (region.source.processingInfo?.conceptText) {
-							defaultText = region.source.processingInfo.conceptText;
-						}
-						
-						// Get default colors from settings, with Obsidian canvas palette colors as fallback
-						// Obsidian canvas supports palette colors '1'-'6' and hex colors '#RRGGBB'
-						const defaultColors = this.settings.defaultColors && this.settings.defaultColors.length > 0
-							? this.settings.defaultColors
-							: ['#E67E22', '#3498DB', '#2ECC71', '#9B59B6', '#E74C3C', '#F39C12', '#1ABC9C', '#95A5A6'];
-						
-						// Prompt for card text and color
-						const cardInput = await new Promise<{ text: string; color: string } | null>((resolve) => {
+					// If it's a new canvas, card input comes from the modal
+					// If it's an existing canvas, we still need to prompt for card and edges option
+					let finalCardInput: { text: string; color: string; clustering?: number; crowdLayout?: 'regiment' | 'gaggle' } | null = cardInput || null;
+					let finalDrawConnections = drawConnections;
+					
+					if (!wasNew && !cardInput) {
+						// Existing canvas - still need to prompt for card and edges option
+						const cardModalResult = await new Promise<{ text: string; color: string; drawEdges?: boolean } | null>((resolve) => {
 							const cardModal = new CardInputModal(
 								this.app,
 								defaultText,
@@ -628,15 +759,39 @@ export class ThoughtlandsSidebarView extends ItemView {
 							cardModal.open();
 						});
 						
-						if (cardInput) {
-							card = cardInput;
-						} else {
-							// User cancelled card creation, proceed without card
+						if (!cardModalResult) {
+							// User cancelled card creation, abort
 							return;
+						}
+						
+						finalCardInput = cardModalResult;
+						// Use drawEdges from modal if provided, otherwise use the default from canvas modal
+						if (cardModalResult.drawEdges !== undefined) {
+							finalDrawConnections = cardModalResult.drawEdges;
 						}
 					}
 					
-					const result = await this.canvasService.addRegionToCanvas(canvasFile, region, isNewCanvas, drawConnections, card, arrangeBySimilarity);
+					// Determine if we should arrange by similarity based on region's semantic similarity mode
+					// All semantic similarity modes (including crowd) need similarity calculation, but crowd uses grid arrangement
+					const arrangeBySimilarity = semanticMode !== undefined; // All semantic modes need similarity calculation
+					
+					// Extract layout parameters from card input if provided
+					const clustering = finalCardInput?.clustering;
+					
+					const result = await this.canvasService.addRegionToCanvas(
+						canvasFile, 
+						region, 
+						isNewCanvas, 
+						finalDrawConnections, 
+						finalCardInput ? { 
+							text: finalCardInput.text, 
+							color: finalCardInput.color,
+							clustering: finalCardInput.clustering,
+							crowdLayout: finalCardInput.crowdLayout
+						} : undefined, 
+						arrangeBySimilarity,
+						clustering
+					);
 					if (result) {
 						// Update region with canvas entry
 						const existingCanvases = region.canvases || [];
@@ -689,16 +844,26 @@ export class ThoughtlandsSidebarView extends ItemView {
 				}
 			},
 			region.name, // Suggest region name for new canvas
-			canArrangeBySimilarity // Pass availability flag
+			defaultText, // Default card text
+			defaultColors, // Default colors
+			isWalkabout, // Show layout controls for walkabout mode
+			semanticMode // Pass semantic mode for crowd layout option
 		);
 		modal.open();
 	}
 
 	private showRegionInfo(region: Region) {
-		const modal = new RegionInfoModal(this.app, region, this.regionService, () => {
-			this.onRegionUpdate();
-			this.render();
-		});
+		const modal = new RegionInfoModal(
+			this.app, 
+			region, 
+			this.regionService, 
+			() => {
+				this.onRegionUpdate();
+				this.render();
+			},
+			this.createRegionCommands,
+			this.settings
+		);
 		modal.open();
 	}
 
