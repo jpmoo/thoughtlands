@@ -4,6 +4,10 @@
 
 Thoughtlands is an Obsidian plugin that organizes and visualizes conceptual relationships across notes in your vault. It creates "regions" (semantic clusters) of related notes that can be visualized on Obsidian canvases with sophisticated layout algorithms.
 
+I'm no developer. I vibe coded this plugin in Cursor. Entirely.
+
+To enjoy all of the features, you'll need Ollama running on your computer with the latest llama and nomic-embed-text models. You can do some things with and OpenAI API key, but not the best things.
+
 ## Features
 
 ### Region Creation Methods
@@ -11,7 +15,7 @@ Thoughtlands is an Obsidian plugin that organizes and visualizes conceptual rela
 1. **Create Region from Search Results** - Enter search terms to find matching notes across your vault (searches metadata and content)
 2. **Create Region from Search Results + AI Analysis** - Enter search terms to find matching notes, then uses semantic similarity analysis to find additional related notes (requires local AI model)
 3. **Create Region from AI-Assisted Concept/Tag Analysis** - Uses AI (OpenAI or local model) to find related tags based on concepts, then gathers all notes using those tags. With local AI, can refine results using semantic similarity analysis.
-4. **Create Region from Semantic Similarity Analysis** - Directly finds notes semantically similar to descriptive text you provide (requires local AI mode)
+4. **Create Region from Semantic Similarity Analysis** - Directly finds notes semantically similar to descriptive text you provide (requires local AI model)
 
 ### Canvas Visualization Modes
 
@@ -25,11 +29,10 @@ When adding regions to canvases, Thoughtlands offers multiple sophisticated layo
   - Level 2-3: Moderate clustering with breathing room
   - Level 4: Tight clustering with cluster summary cards
 - **Cluster Summary Cards** - At clustering level 4, AI-generated summary cards appear near each cluster (1+ notes) with 4-6 sentence summaries
-- **Organic Distribution** - Uses normalized 2D layouts with Gaussian noise to prevent "swirl" effects and ensure even 360-degree distribution
 
 #### Hopscotch & Rolling Path Modes
 - **Path-Based Layout** - Notes arranged in a diagonal path from left to right
-- **Semantic Ordering** - Notes ordered by similarity to the central concept
+- **Semantic Ordering** - Notes ordered by similarity to the central concept, with each note selected by its similarity to the previous note (Hopscotch) or the aggregation of the original concept with all previous notes in the path (Rolling Path).
 - **Path Summary Cards** - AI-generated 4-6 sentence summary card at the end of the path that answers the central concept as a question
 
 #### Crowd Mode
